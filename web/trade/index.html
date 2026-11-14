@@ -8,26 +8,16 @@
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M9 22l7-13 7 13M12 17h8' fill='none' stroke='%2376b900' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
 </head>
 <body>
-  <header class="bar">
-    <div class="brand"><span class="logo">A</span>Aimo Trade</div>
-    <div class="search"><input id="q" placeholder="Search products" autocomplete="off" /></div>
-    <div class="bar-r">
-      <div class="pop-wrap">
-        <button class="net" id="net"><i></i><span id="netText">Checking…</span></button>
-        <div class="pop" id="netPop" hidden>
-          <div class="pop-t" id="netInfo"></div>
-          <button class="btn full" id="drill"></button>
-        </div>
-      </div>
-      <select id="store" aria-label="Store"></select>
-    </div>
-  </header>
-
-  <div class="signal" id="signal">
-    <div class="sig-state"><i></i><b id="sigState">Checking the link…</b><span id="sigSub"></span></div>
-    <div class="sig-hist" title="Satellite link, last 24 hours"><span>24 h</span><div id="sigBars"></div><span>now</span></div>
-    <div class="sig-stats" id="sigStats"></div>
+  <div class="statusbar sb-wait" id="signal" role="button" tabindex="0">
+    <span class="sb-dot"></span><span class="sb-title" id="sigState">Connecting…</span><span class="sb-detail" id="sigSub"></span>
+    <span class="sb-out" id="sigOut" hidden></span><span class="sb-more">Details</span>
+    <div class="pop" id="netPop" hidden><div class="pop-t" id="netInfo"></div><button class="btn full" id="drill"></button></div>
   </div>
+  <header class="bar">
+    <div class="brand">Aimo Trade</div>
+    <div class="search"><input id="q" placeholder="Search products" autocomplete="off" /></div>
+    <select id="store" aria-label="Store"></select>
+  </header>
   <div class="shell">
     <nav class="nav" id="nav">
       <a data-p="home" class="on"><svg viewBox="0 0 20 20"><path d="M3 9l7-6 7 6v8H3z"/></svg>Home</a>
@@ -38,10 +28,7 @@
       <div class="nav-h">Agents</div>
       <a data-p="agents"><svg viewBox="0 0 20 20"><path d="M10 2l2 5 5 1-4 3 1 5-4-3-4 3 1-5-4-3 5-1z"/></svg>Agent tasks<b id="navRun" hidden>•</b></a>
       <a data-p="inference"><svg viewBox="0 0 20 20"><path d="M3 15l4-5 3 3 4-6 3 4M3 17h14"/></svg>Inference</a>
-      <div class="nav-foot">
-        <div id="storeMeta"></div>
-        <button class="lnk" id="reset">Reset demo</button>
-      </div>
+      <div class="nav-foot"><button class="lnk" id="reset">Reset demo</button></div>
     </nav>
 
     <main class="page" id="page"></main>

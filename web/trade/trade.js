@@ -19,7 +19,6 @@ async function loadStore() {
   $("#navLow").hidden = !low; $("#navLow").textContent = low;
   $("#navApprovals").hidden = !pend; $("#navApprovals").textContent = pend;
   renderSignal();
-  $("#storeMeta").innerHTML = `<b>${esc(S.store.name)}</b><br>${esc(S.store.place)}<br>${esc(S.store.link)}`;
   render();
 }
 async function pollLink() {
@@ -27,8 +26,6 @@ async function pollLink() {
     const s = await (await fetch("/v1/status")).json();
     const was = S.link && S.link.connected;
     S.link = s;
-    $("#net").className = `net ${s.connected ? "" : "off"}`;
-    $("#netText").textContent = s.connected ? `Online · ${s.label} · ${s.latency_ms ?? "–"} ms` : s.drill ? "Offline (drill) · on device" : "Offline · on device";
     $("#netInfo").innerHTML = s.connected
       ? `Agents run on <b>${esc(s.model)}</b> in ${esc(s.label)}. Confidential steps (budgets, approvals) stay on this device.`
       : `No link to the cloud. Agents run on <b>${DEVICE_MODEL}</b> on this laptop. Orders wait in the outbox and send themselves when the link returns.`;
@@ -38,7 +35,7 @@ async function pollLink() {
     renderSignal();
     if (was !== undefined && was !== s.connected) { toast(s.connected ? "Link restored. Outbox syncing." : "Link lost. Agents continue on this device."); loadStore(); }
     if (S.page === "inference") renderInference();
-  } catch { $("#netText").textContent = "Server offline"; }
+  } catch { $("#signal").className = "statusbar sb-down"; $("#sigState").textContent = "Server unreachable"; $("#sigSub").textContent = ""; }
   setTimeout(pollLink, 2000);
 }
 
@@ -46,16 +43,13 @@ async function pollLink() {
 // 48 half-hour slots for today. Earlier slots are the store's logged pattern (mock); the last slot is live.
 const HISTORY = { eastgate: "111111001111111110000111111111110011111111100111", "lagos-coop": "111111111101111111111111011111111111110111111111", "hotel-aurora": "111111111111111111111111111111111111111111111111" };
 function renderSignal() {
-  const s = S.link || {}, off = !s.connected, out = (S.store?.outbox || []).filter((o) => o.status === "waiting_for_signal").length;
-  document.body.classList.toggle("offline", off);
-  const mins = S.offSince ? Math.max(0, Math.round((Date.now() - S.offSince) / 60000)) : 0;
-  $("#sigState").textContent = off ? "No signal — working on this laptop" : `Satellite link up · ${s.label || ""}`;
-  $("#sigSub").textContent = off ? `Offline ${mins ? `${mins} min` : "just now"} · agents on ${DEVICE_MODEL} · orders wait in the outbox` : `${s.latency_ms ?? "–"} ms · agents on ${s.model || "the cloud"} · last sync ${S.lastSync ? new Date(S.lastSync).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "–"}`;
-  const h = (HISTORY[S.buyer] || HISTORY.eastgate).split("");
-  h[h.length - 1] = off ? "0" : "1";
-  const up = h.filter((x) => x === "1").length;
-  $("#sigBars").innerHTML = h.map((x) => `<i class="${x === "1" ? "" : "down"}"></i>`).join("");
-  $("#sigStats").innerHTML = `<span><b>${Math.round((up / h.length) * 100)} %</b> uptime today</span><span><b>${h.join("").split(/1+/).filter(Boolean).length}</b> drops</span><span class="${out ? "hot" : ""}"><b>${out}</b> in outbox</span>`;
+  const s = S.link || {}, out = (S.store?.outbox || []).filter((o) => o.status === "waiting_for_signal").length;
+  const cls = !S.link ? "sb-wait" : s.connected ? "sb-online" : s.network ? "sb-edge" : "sb-nonet";
+  document.body.classList.toggle("offline", !!S.link && !s.connected);
+  $("#signal").className = `statusbar ${cls}`;
+  $("#sigState").textContent = !S.link ? "Connecting…" : s.connected ? "Connected" : "Offline";
+  $("#sigSub").textContent = !S.link ? "" : s.connected ? `· ${s.label}` : s.drill ? "· Clouds disconnected" : s.network ? "· No cloud reachable" : "· No network";
+  $("#sigOut").hidden = !out; $("#sigOut").textContent = `${out} order${out === 1 ? "" : "s"} waiting to send`;
 }
 
 // ---------------------------------------------------------------- agent runs
@@ -221,7 +215,7 @@ function renderHome() {
     ...closed.map((r) => ({ ic: "⨯", t: `${r.name}: ${r.status}`, s: r.note, btn: `<button class="btn sm" data-go="routes">View</button>` })),
   ];
   $("#page").innerHTML = `
-    <div class="head"><h1>Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}, ${esc(s.name)}</h1><div class="r"><button class="btn dark" data-preset="0">Plan this week with agents</button></div></div>
+    <div class="head"><h1>Good ${new Date().getHours() < 12 ? "morning" : "afternoon"}</h1><div class="r"><button class="btn dark" data-preset="0">Plan this week with agents</button></div></div>
     <div class="grid g4">
       <div class="card kpi"><div class="l">Revenue, last 7 days</div><div class="v num">${eur(t.revenue_last_7_days_eur)}</div><div class="d ${t.change_pct >= 0 ? "up" : "down"}">${t.change_pct >= 0 ? "↑" : "↓"} ${Math.abs(t.change_pct)} % vs previous week</div></div>
       <div class="card kpi"><div class="l">Orders, last 7 days</div><div class="v num">${t.orders_last_7_days}</div><div class="d muted">${esc(s.customers)}</div></div>
@@ -319,7 +313,7 @@ function renderInference() {
 // ---------------------------------------------------------------- events
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-p],[data-preset],[data-go],[data-order],[data-decide],[data-approve]");
-  if (!t) { if (!e.target.closest(".pop-wrap")) $("#netPop").hidden = true; return; }
+  if (!t) { if (!e.target.closest("#signal")) $("#netPop").hidden = true; return; }
   if (t.dataset.p) go(t.dataset.p);
   else if (t.dataset.go) go(t.dataset.go);
   else if (t.dataset.approve) go("orders");
@@ -330,7 +324,7 @@ document.addEventListener("click", async (e) => {
     toast(t.dataset.ok ? "Approved. The wholesaler will deliver." : "Rejected."); loadStore();
   }
 });
-$("#net").addEventListener("click", () => ($("#netPop").hidden = !$("#netPop").hidden));
+$("#signal").addEventListener("click", (e) => { if (!e.target.closest(".pop")) $("#netPop").hidden = !$("#netPop").hidden; });
 $("#drill").addEventListener("click", async () => { await fetch("/api/link", { method: "POST", headers: json, body: JSON.stringify({ offline: !(S.link && S.link.drill) }) }); $("#netPop").hidden = true; });
 $("#store").innerHTML = STORES.map(([k, n]) => `<option value="${k}">${n}</option>`).join("");
 $("#store").value = S.buyer;
