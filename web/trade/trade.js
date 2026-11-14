@@ -6,7 +6,7 @@ const TRADE = "/trade/v1", APPROVER = "demo-approver-key";
 const json = { "content-type": "application/json" };
 const STORES = [["eastgate", "Eastgate Provisions"], ["lagos-coop", "Lekki Kitchens Co-op"], ["hotel-aurora", "Hotel Aurora"]];
 const DEVICE_MODEL = "Nemotron 3.5 Bolt E4B";
-const S = { page: "home", buyer: localStorage.getItem("trade.buyer") || "eastgate", store: null, link: null, runs: [], steps: [], products: null, q: "" };
+const S = { offSince: null, lastSync: null, drops: [], page: "home", buyer: localStorage.getItem("trade.buyer") || "eastgate", store: null, link: null, runs: [], steps: [], products: null, q: "" };
 
 const toast = (m) => { const t = $("#toast"); t.textContent = m; t.hidden = false; clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 3200); };
 const tierOf = (target) => (target === "edge" ? "device" : "cloud");
@@ -18,6 +18,7 @@ async function loadStore() {
   const low = S.store.stock.items.filter((i) => i.status !== "ok").length, pend = S.store.orders.filter((o) => o.status === "pending_approval").length;
   $("#navLow").hidden = !low; $("#navLow").textContent = low;
   $("#navApprovals").hidden = !pend; $("#navApprovals").textContent = pend;
+  renderSignal();
   $("#storeMeta").innerHTML = `<b>${esc(S.store.name)}</b><br>${esc(S.store.place)}<br>${esc(S.store.link)}`;
   render();
 }
@@ -32,10 +33,29 @@ async function pollLink() {
       ? `Agents run on <b>${esc(s.model)}</b> in ${esc(s.label)}. Confidential steps (budgets, approvals) stay on this device.`
       : `No link to the cloud. Agents run on <b>${DEVICE_MODEL}</b> on this laptop. Orders wait in the outbox and send themselves when the link returns.`;
     $("#drill").textContent = s.drill ? "Restore the link" : "Simulate losing the link";
+    if (!s.connected && !S.offSince) S.offSince = Date.now();
+    if (s.connected) { if (S.offSince) S.drops.push(S.offSince); S.offSince = null; S.lastSync = Date.now(); }
+    renderSignal();
     if (was !== undefined && was !== s.connected) { toast(s.connected ? "Link restored. Outbox syncing." : "Link lost. Agents continue on this device."); loadStore(); }
     if (S.page === "inference") renderInference();
   } catch { $("#netText").textContent = "Server offline"; }
   setTimeout(pollLink, 2000);
+}
+
+// ---------------------------------------------------------------- the link, front and centre
+// 48 half-hour slots for today. Earlier slots are the store's logged pattern (mock); the last slot is live.
+const HISTORY = { eastgate: "111111001111111110000111111111110011111111100111", "lagos-coop": "111111111101111111111111011111111111110111111111", "hotel-aurora": "111111111111111111111111111111111111111111111111" };
+function renderSignal() {
+  const s = S.link || {}, off = !s.connected, out = (S.store?.outbox || []).filter((o) => o.status === "waiting_for_signal").length;
+  document.body.classList.toggle("offline", off);
+  const mins = S.offSince ? Math.max(0, Math.round((Date.now() - S.offSince) / 60000)) : 0;
+  $("#sigState").textContent = off ? "No signal — working on this laptop" : `Satellite link up · ${s.label || ""}`;
+  $("#sigSub").textContent = off ? `Offline ${mins ? `${mins} min` : "just now"} · agents on ${DEVICE_MODEL} · orders wait in the outbox` : `${s.latency_ms ?? "–"} ms · agents on ${s.model || "the cloud"} · last sync ${S.lastSync ? new Date(S.lastSync).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "–"}`;
+  const h = (HISTORY[S.buyer] || HISTORY.eastgate).split("");
+  h[h.length - 1] = off ? "0" : "1";
+  const up = h.filter((x) => x === "1").length;
+  $("#sigBars").innerHTML = h.map((x) => `<i class="${x === "1" ? "" : "down"}"></i>`).join("");
+  $("#sigStats").innerHTML = `<span><b>${Math.round((up / h.length) * 100)} %</b> uptime today</span><span><b>${h.join("").split(/1+/).filter(Boolean).length}</b> drops</span><span class="${out ? "hot" : ""}"><b>${out}</b> in outbox</span>`;
 }
 
 // ---------------------------------------------------------------- agent runs
