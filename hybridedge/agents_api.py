@@ -172,10 +172,10 @@ async def create_response(body: ResponseCreate):
         profile = _agent_of(body) or "incident"
         if profile not in PROFILES:
             raise HTTPException(400, f"unknown agent '{profile}'")
-        t = await store.create_thread(body.title or text.splitlines()[0][:60], source=source, profile=profile)
+        t = await store.create_thread(body.title or store.short_title(text), source=source, profile=profile)
         thread_id = t["id"]
     if t["title"] in ("New incident", "New session"):
-        await store.touch_thread(thread_id, title=text.splitlines()[0][:60])
+        await store.touch_thread(thread_id, title=store.short_title(text))
 
     rid = "resp_" + uuid.uuid4().hex[:24]
     await store.create_response(rid, thread_id, body.metadata)
@@ -278,6 +278,20 @@ async def get_session(sid: str):
         ],
         "incident_log": await store.list_events(sid),
     }
+
+
+@api.delete("/sessions/{sid}")
+async def delete_session(sid: str) -> dict:
+    """Delete a session with its checkpoints, events, saved flows and context."""
+    if not await store.get_thread(sid):
+        raise HTTPException(404, "Unknown session")
+    run = RUNS.get(sid)
+    if run and not run.done:
+        raise HTTPException(409, "Session is running")
+    await graph().checkpointer.adelete_thread(sid)
+    await store.delete_thread(sid)
+    RUNS.pop(sid, None)
+    return {"id": sid, "deleted": True}
 
 
 @api.put("/sessions/{sid}/context")
@@ -384,6 +398,8 @@ async def status():
         "model": prov["model"] if prov else s["edge"]["model"],
         "latency_ms": prov["latency_ms"] if prov else None,
         "max_agents": s["budget"]["max_agents"],
+        "primary": s["providers"][0]["name"] if s["providers"] else None,
+        "drill": bool(s.get("offline")),
     }
 
 

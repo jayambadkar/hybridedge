@@ -119,6 +119,9 @@ class FlowBuilder:
             for task in p["tasks"]:
                 self.lanes[task["id"]] = {"id": task["id"], "role": task["role"], "title": task["title"], "task": task["task"], "status": "queued", "steps": []}
                 self.order.append(task["id"])
+            for task in p.get("deferred") or []:
+                self.lanes[task["id"]] = {"id": task["id"], "role": task["role"], "title": f"{task['title']} · waiting for cloud", "task": task["task"], "status": "deferred", "steps": []}
+                self.order.append(task["id"])
             self.stage_status.update(planning="done", reasoning="active", checkpointing="active")
             return True
         if t == "tool_call" and tid == "review" and "review" not in self.lanes:
@@ -152,8 +155,19 @@ class FlowBuilder:
                         st["status"] = "failed_over"
                         break
             return True
+        if t == "deferred" and tid in self.lanes:
+            lane = self.lanes[tid]
+            lane.update(status="deferred", title=f"{lane['title'].split(' · ')[0]} · waiting for cloud")
+            for st in reversed(lane["steps"]):
+                if st["kind"] == "reason" and st["status"] in ("running", "failed_over"):
+                    st["status"] = "moved"
+                    break
+            return True
         if t == "revise":
             for task in ev.get("tasks", []):
+                if task.get("deferred") and task["id"] in self.lanes:
+                    self.lanes[task["id"]].update(status="queued", title=f"{task['title']} · deferred to cloud")
+                    continue
                 label = "added by review" if task.get("added") else "revision"
                 self.lanes[task["id"]] = {"id": task["id"], "role": task["role"], "title": f"{task['title']} · {label}", "task": task["task"], "status": "queued", "steps": [], "revision": True}
                 self.order.append(task["id"])

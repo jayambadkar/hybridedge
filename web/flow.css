@@ -43,6 +43,8 @@
 .hf-agent:first-child { border-top: 0; }
 .hf-aname { font-weight: 500; display: flex; align-items: center; gap: 8px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hf-a-queued .hf-aname { color: var(--hf-muted); }
+.hf-a-deferred .hf-aname, .hf-a-deferred .hf-awhere { color: var(--hf-muted); font-style: italic; }
+.hf-a-deferred .hf-track::before { content: "Waits for cloud"; font-size: 11px; color: var(--hf-muted); border: 1px dashed var(--hf-line); border-radius: 6px; padding: 1px 8px; }
 .hf-num { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; font-size: 10.5px; font-weight: 600; color: #fff; background: var(--hf-accent); flex: none; }
 .hf-track { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .hf-awhere { font-size: 11.5px; color: var(--hf-muted); white-space: nowrap; }

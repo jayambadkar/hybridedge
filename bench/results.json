@@ -1,0 +1,274 @@
+{
+ "models": {
+  "cloud": {
+   "gsm8k": {
+    "n": 60,
+    "correct": 60,
+    "accuracy": 100.0,
+    "p50_s": 7.72,
+    "wall_s": 37.7,
+    "tokens": 40857
+   },
+   "bfcl_simple": {
+    "n": 40,
+    "correct": 39,
+    "accuracy": 97.5,
+    "p50_s": 4.82,
+    "wall_s": 17.3,
+    "tokens": 15021
+   },
+   "bfcl_multiple": {
+    "n": 40,
+    "correct": 37,
+    "accuracy": 92.5,
+    "p50_s": 5.33,
+    "wall_s": 20.2,
+    "tokens": 18480
+   },
+   "bfcl_parallel": {
+    "n": 40,
+    "correct": 35,
+    "accuracy": 87.5,
+    "p50_s": 7.39,
+    "wall_s": 24.3,
+    "tokens": 23180
+   }
+  },
+  "device": {
+   "gsm8k": {
+    "n": 60,
+    "correct": 55,
+    "accuracy": 91.7,
+    "p50_s": 2.21,
+    "wall_s": 148.5,
+    "tokens": 5959
+   },
+   "bfcl_simple": {
+    "n": 40,
+    "correct": 40,
+    "accuracy": 100.0,
+    "p50_s": 1.32,
+    "wall_s": 57.5,
+    "tokens": 939
+   },
+   "bfcl_multiple": {
+    "n": 40,
+    "correct": 39,
+    "accuracy": 97.5,
+    "p50_s": 3.28,
+    "wall_s": 176.2,
+    "tokens": 1255
+   },
+   "bfcl_parallel": {
+    "n": 40,
+    "correct": 33,
+    "accuracy": 82.5,
+    "p50_s": 3.79,
+    "wall_s": 154.4,
+    "tokens": 2920
+   }
+  }
+ },
+ "updated": "2026-11-14 22:16",
+ "system": {
+  "checkpoint": {
+   "steps": 200,
+   "ms_per_checkpoint": 1.09,
+   "state_kb_final": 400,
+   "durability": "sync (written before the next step starts)"
+  },
+  "failover": {
+   "runs": [
+    {
+     "detect_ms": 75,
+     "resume_ms": 3242,
+     "output_ms": 3242,
+     "completed": true,
+     "total_s": 43.2
+    },
+    {
+     "detect_ms": 73,
+     "resume_ms": 2478,
+     "output_ms": 2478,
+     "completed": true,
+     "total_s": 59.4
+    },
+    {
+     "detect_ms": 56,
+     "resume_ms": 5553,
+     "output_ms": 5554,
+     "completed": true,
+     "total_s": 58.4
+    },
+    {
+     "detect_ms": 41,
+     "resume_ms": 6226,
+     "output_ms": 6226,
+     "completed": true,
+     "total_s": 83.3
+    },
+    {
+     "detect_ms": 57,
+     "resume_ms": 4116,
+     "output_ms": 4116,
+     "completed": true,
+     "total_s": 105.3
+    }
+   ],
+   "n": 5,
+   "completed": 5,
+   "detect_ms_p50": 57,
+   "resume_ms_p50": 4116,
+   "output_ms_p50": 4116,
+   "resume_ms_max": 6226
+  },
+  "scenarios": {
+   "cloud": {
+    "label": "Cloud up",
+    "completed": true,
+    "total_s": 29.5,
+    "first_brief_s": 29.3,
+    "plan_s": 7.5,
+    "advisers": 5,
+    "advisers_cloud": 5,
+    "advisers_device": 0,
+    "deferred": [],
+    "review": {
+     "verdict": "Multiple critical issues: ambulance shortfall, unassigned casualty triage data, and ARV deployment gaps endangering civilians.",
+     "device": null,
+     "issues": 6
+    },
+    "brief_chars": 2532,
+    "checkpoints": 58,
+    "switches": [],
+    "targets": [
+     "verda"
+    ]
+   },
+   "offline": {
+    "label": "No network",
+    "completed": true,
+    "total_s": 34.7,
+    "first_brief_s": 25.9,
+    "plan_s": 7.3,
+    "advisers": 2,
+    "advisers_cloud": 0,
+    "advisers_device": 2,
+    "deferred": [
+     "casualties",
+     "firearms",
+     "public_warning"
+    ],
+    "review": {
+     "verdict": "1 issue(s) found",
+     "device": true,
+     "issues": 1
+    },
+    "brief_chars": 745,
+    "checkpoints": 16,
+    "switches": [],
+    "targets": [
+     "edge"
+    ]
+   },
+   "cut": {
+    "label": "Link lost at 12 s",
+    "completed": true,
+    "total_s": 48.0,
+    "first_brief_s": 37.0,
+    "plan_s": 10.8,
+    "advisers": 2,
+    "advisers_cloud": 0,
+    "advisers_device": 2,
+    "deferred": [
+     "casualties",
+     "firearms",
+     "public_warning"
+    ],
+    "review": {
+     "verdict": "1 issue(s) found",
+     "device": true,
+     "issues": 1
+    },
+    "brief_chars": 888,
+    "checkpoints": 30,
+    "switches": [
+     {
+      "t": 12.1,
+      "kind": "failover",
+      "to": "edge",
+      "agent": "firearms"
+     },
+     {
+      "t": 12.1,
+      "kind": "failover",
+      "to": "edge",
+      "agent": "casualties"
+     },
+     {
+      "t": 12.1,
+      "kind": "failover",
+      "to": "edge",
+      "agent": "public_warning"
+     },
+     {
+      "t": 12.1,
+      "kind": "failover",
+      "to": "edge",
+      "agent": "intelligence"
+     },
+     {
+      "t": 12.1,
+      "kind": "failover",
+      "to": "edge",
+      "agent": "zones"
+     }
+    ],
+    "targets": [
+     "edge",
+     "verda"
+    ]
+   },
+   "back": {
+    "label": "Offline, cloud back at 9 s",
+    "completed": true,
+    "total_s": 34.4,
+    "first_brief_s": 33.5,
+    "plan_s": 3.7,
+    "advisers": 5,
+    "advisers_cloud": 5,
+    "advisers_device": 0,
+    "deferred": [
+     "casualties",
+     "firearms",
+     "public_warning"
+    ],
+    "review": {
+     "verdict": "1 issue(s) found",
+     "device": null,
+     "issues": 1
+    },
+    "brief_chars": 2368,
+    "checkpoints": 52,
+    "switches": [
+     {
+      "t": 9.0,
+      "kind": "upgrade",
+      "to": "verda",
+      "agent": "intelligence"
+     },
+     {
+      "t": 9.0,
+      "kind": "upgrade",
+      "to": "verda",
+      "agent": "zones"
+     }
+    ],
+    "targets": [
+     "edge",
+     "verda"
+    ]
+   }
+  }
+ }
+}

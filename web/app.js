@@ -46,20 +46,38 @@ const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 const ROLE_TITLES = { lead: "Workflow", medical: "Medical", fire_hazmat: "Fire & Hazmat", scene_safety: "Scene Safety", comms: "Command & Comms", generalist: "Field Assistant" };
 const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
+const SOURCE = { "incident-command": "Incident Command", patrol: "Patrol", bench: "Benchmark", test: "Test", api: "API" };
+
 function md(src) {
   const lines = esc(src || "").split("\n");
-  let html = "", list = null;
+  let html = "", list = null, table = null;
   const inline = (s) => s
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/&lt;br\s*\/?&gt;/gi, "<br>");
+  const closeTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table.head ? table : [null, ...table];
+    html += `<div class="md-table"><table>${head ? `<thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>` : ""}<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    table = null;
+  };
+  const close = () => { closeTable(); if (list) { html += `</${list}>`; list = null; } };
   for (const raw of lines) {
     const line = raw.trimEnd();
     let m;
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (list) { html += `</${list}>`; list = null; }
+      const cells = line.trim().slice(1, -1).split("|").map((c) => c.trim());
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c))) { if (table && table.length === 1) table.head = true; continue; }
+      (table ||= []).push(cells);
+      continue;
+    }
+    closeTable();
     if ((m = line.match(/^\s*#{1,4}\s+(.*)$/))) { close(); html += `<h3>${inline(m[1])}</h3>`; }
     else if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { if (list !== "ul") { close(); html += "<ul>"; list = "ul"; } html += `<li>${inline(m[1])}</li>`; }
     else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { if (list !== "ol") { close(); html += "<ol>"; list = "ol"; } html += `<li>${inline(m[1])}</li>`; }
+    else if (/^\s*(-{3,}|\*{3,})\s*$/.test(line)) { close(); html += "<hr>"; }
     else if (!line.trim()) { close(); }
     else { close(); html += `<p>${inline(line)}</p>`; }
   }
@@ -238,25 +256,92 @@ async function setLink(body) {
 
 /* ----------------------------------------------------------------- settings */
 async function openSettings() {
+  closeSettings();
   state.view = "settings";
   try { state.settings = await api("/api/settings"); } catch { state.settings = null; }
-  $("#feed").hidden = true;
-  $(".composer-wrap").hidden = true;
-  $("#settings").hidden = false;
-  $("#settingsBtn").classList.add("on");
-  $("#title").textContent = "Settings";
-  $("#sidebar").classList.remove("open");
+  showPage("#settings", "#settingsBtn", "Settings");
   renderSettings();
 }
 
+async function openBench() {
+  closeSettings();
+  state.view = "bench";
+  showPage("#bench", "#benchBtn", "Benchmarks");
+  $("#bench").innerHTML = `<div class="col"><p class="muted">Loading…</p></div>`;
+  try { state.bench = await api("/api/benchmarks"); } catch { state.bench = null; }
+  renderBench();
+}
+
+function showPage(sel, btn, title) {
+  $("#feed").hidden = true;
+  $(".composer-wrap").hidden = true;
+  $(sel).hidden = false;
+  $(btn).classList.add("on");
+  $("#title").textContent = title;
+  $("#sidebar").classList.remove("open");
+}
+
+// Closes whichever full-page view (settings, benchmarks) is open and returns to the incident.
 function closeSettings() {
-  if (state.view !== "settings") return;
+  if (state.view === "chat") return;
   state.view = "chat";
   $("#feed").hidden = false;
   $(".composer-wrap").hidden = false;
-  $("#settings").hidden = true;
-  $("#settingsBtn").classList.remove("on");
+  for (const id of ["#settings", "#bench"]) $(id).hidden = true;
+  for (const id of ["#settingsBtn", "#benchBtn"]) $(id).classList.remove("on");
   $("#title").textContent = state.thread?.thread?.title || "New incident";
+}
+
+/* --------------------------------------------------------------- benchmarks */
+function renderBench() {
+  const b = state.bench;
+  const el = $("#bench");
+  if (!b || !b.models) { el.innerHTML = `<div class="col"><div class="err">No benchmark results yet. Run <code>uv run python bench/models.py</code> and <code>bench/system.py</code>.</div></div>`; return; }
+  const m = b.models, sys = b.system || {};
+  const cloud = m.cloud || {}, dev = m.device || {};
+  const ROWS = [
+    ["gsm8k", "GSM8K", "Grade-school maths, multi-step reasoning"],
+    ["bfcl_simple", "BFCL simple", "One function call from one tool"],
+    ["bfcl_multiple", "BFCL multiple", "Pick the right tool from several"],
+    ["bfcl_parallel", "BFCL parallel", "Several calls in one turn"],
+  ].filter(([k]) => cloud[k] || dev[k]);
+  const bar = (r, cls, who) => r ? `<div class="bb-row" title="${who}: ${r.correct} of ${r.n} correct · median ${r.p50_s}s per item">
+      <span class="bb-who">${who}</span><span class="bb-track"><i class="${cls}" style="width:${r.accuracy}%"></i></span><span class="bb-val">${r.accuracy}%</span></div>` : "";
+  const quality = ROWS.map(([k, name, desc]) => `<div class="bb">
+      <div class="bb-h"><b>${name}</b><span class="muted">${desc}</span><span class="bb-n">n = ${(cloud[k] || dev[k]).n}${cloud[k] && dev[k] && cloud[k].n !== dev[k].n ? ` / ${dev[k].n}` : ""}</span></div>
+      ${bar(cloud[k], "c", "Cloud")}${bar(dev[k], "d", "Device")}</div>`).join("");
+  const tools = ["bfcl_simple", "bfcl_multiple", "bfcl_parallel"].filter((k) => cloud[k] && dev[k]);
+  const keep = tools.length ? Math.round(100 * tools.reduce((a, k) => a + dev[k].accuracy, 0) / tools.reduce((a, k) => a + cloud[k].accuracy, 0)) : null;
+  const sc = sys.scenarios || {};
+  const scen = Object.values(sc);
+  const fo = sys.failover, cp = sys.checkpoint;
+  const tile = (v, l, sub) => `<div class="kpi"><div class="kpi-v">${v}</div><div class="kpi-l">${l}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ""}</div>`;
+  const kpis = [
+    scen.length ? tile(`${scen.filter((x) => x.completed).length} of ${scen.length}`, "Network scenarios completed", "Full MTA workflow, every brief delivered") : "",
+    fo && fo.resume_ms_p50 != null ? tile(`${(fo.resume_ms_p50 / 1000).toFixed(1)} s`, "Link lost → device writing", `Median of ${fo.n} cuts mid-answer`) : "",
+    keep != null ? tile(`${keep}%`, "Tool-calling accuracy kept on device", "BFCL, device vs cloud") : "",
+    cp ? tile(`${cp.ms_per_checkpoint} ms`, "Per durable checkpoint", "SQLite, written before every step") : "",
+  ].join("");
+  const scRows = scen.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.completed ? `<span class="ok-t">Completed</span>` : `<span class="bad-t">Failed</span>`}</td>
+      <td>${x.first_brief_s ?? "—"} s</td><td>${x.total_s ?? "—"} s</td>
+      <td>${x.advisers_cloud ? `<span class="tag cloud">${x.advisers_cloud} cloud</span>` : ""}${x.advisers_device ? `<span class="tag edge">${x.advisers_device} device</span>` : ""}</td>
+      <td>${x.deferred && x.deferred.length ? (x.advisers_cloud ? `${x.deferred.length} → cloud` : `${x.deferred.length} waiting`) : "—"}</td>
+      <td>${x.review ? (x.review.device ? "Rule checks" : `${x.review.issues} issues`) : "—"}</td><td>${x.checkpoints || "—"}</td></tr>`).join("");
+  const foRuns = fo ? fo.runs.map((r) => r.resume_ms).filter((x) => x != null) : [];
+  const foMax = Math.max(1, ...foRuns, 1);
+  const foViz = fo ? `<div class="card"><div class="fo">${fo.runs.map((r, i) => `<div class="fo-row" title="Run ${i + 1}: detected in ${r.detect_ms} ms, device writing after ${r.resume_ms} ms">
+      <span class="bb-who">Run ${i + 1}</span><span class="bb-track"><i class="d" style="width:${Math.max(2, (100 * (r.resume_ms || 0)) / foMax)}%"></i><em class="fo-det" style="left:${(100 * (r.detect_ms || 0)) / foMax}%"></em></span>
+      <span class="bb-val">${r.resume_ms != null ? (r.resume_ms / 1000).toFixed(2) + " s" : "—"}</span></div>`).join("")}</div>
+      <p class="muted bb-foot">Marker: cut detected and the step handed to the device (median ${fo.detect_ms_p50} ms). Bar: first token from the device model, continuing the same answer. ${fo.completed} of ${fo.n} answers completed.</p></div>` : "";
+  el.innerHTML = `<div class="col bench">
+    <div class="kpis">${kpis}</div>
+    <div class="set-sec"><h2>Model quality</h2><p>Each tier in its production setup: Nemotron 3.5 Lightning 30B on Verda with reasoning, Nemotron 3.5 Bolt E4B on this MacBook Air without.</p>
+      <div class="card">${quality}<div class="bb-legend"><span><i class="c"></i>Cloud · Lightning 30B</span><span><i class="d"></i>Device · Bolt E4B</span></div></div></div>
+    ${scen.length ? `<div class="set-sec"><h2>Network scenarios</h2><p>The full marauding-attack workflow (5 advisers, review, brief) from three field reports.</p>
+      <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Network</th><th>Result</th><th>Brief starts</th><th>Done</th><th>Advisers</th><th>Deferred</th><th>Review</th><th>Checkpoints</th></tr></thead><tbody>${scRows}</tbody></table></div></div>` : ""}
+    ${fo ? `<div class="set-sec"><h2>Failover</h2><p>The link is cut mid-answer; the same answer carries on from this device.</p>${foViz}</div>` : ""}
+    <p class="muted bb-foot">GSM8K test set and BFCL v3 (AST match), first n items, temperature 0. Updated ${esc(b.updated || "")}. Re-run with <code>bench/models.py</code> and <code>bench/system.py</code>.</p>
+  </div>`;
 }
 
 function drillsHTML(s) {
@@ -354,7 +439,7 @@ async function loadThreads() {
 }
 function renderThreads() {
   $("#threads").innerHTML = state.threads.map((t) =>
-    `<button class="thread ${t.id === state.threadId ? "active" : ""}" data-thread="${t.id}"><span class="t">${esc(t.title)}</span><span class="s">${t.running ? `<span class="live">Live</span> · ` : ""}${t.source && t.source !== "console" ? `${esc(cap(t.source))} · ` : ""}${ago(t.updated_at)}</span></button>`
+    `<button class="thread ${t.id === state.threadId ? "active" : ""}" data-thread="${t.id}"><span class="t">${esc(t.title)}</span><span class="s">${t.running ? `<span class="live">Live</span> · ` : ""}${t.source && t.source !== "console" ? `${esc(SOURCE[t.source] || cap(t.source))} · ` : ""}${ago(t.updated_at)}</span></button>`
   ).join("") || `<div class="muted" style="padding:8px 10px;font-size:12.5px">No incidents yet.</div>`;
 }
 
@@ -393,7 +478,7 @@ function lastTurnDegraded() {
 function agentHTML(a, expanded) {
   const st = a.status === "done" ? `<span class="st done">${ICON.check}</span>` : a.status === "running" ? `<span class="st"><span class="spin"></span></span>` : `<span class="st"><span class="ring"></span></span>`;
   const targets = [...new Set(a.targets || [])];
-  const chip = targets.length ? targets.map((t) => tag(t)).join("") : a.target ? tag(a.target) : `<span class="tag plain">Queued</span>`;
+  const chip = targets.length ? targets.map((t) => tag(t)).join("") : a.target ? tag(a.target) : `<span class="tag plain">${a.status === "deferred" ? "Waits for cloud" : "Queued"}</span>`;
   const sub = a.status === "running" && a.preview ? `<div class="agent-preview">${esc(a.preview)}</div>` : `<div class="agent-task">${esc(a.task)}</div>`;
   const notes = (a.failovers || []).map(noteHTML).join("");
   const tools = (a.tools || []).length ? `<div class="tools">${a.tools.map((t) => `<span class="tool">${esc(t)}</span>`).join("")}</div>` : "";
@@ -415,7 +500,8 @@ function workflowHTML(plan, agents, running, flow) {
   const collapsed = collapsedWf.has(plan.turn_id);
   if (flow) state.flows[plan.turn_id] = flow;
   const head = `<div class="wf-head"><button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : flow && flow.layout === "serial" ? `${n} agents, one at a time` : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>${flow ? `<button class="wf-flowbtn" data-flow="${esc(plan.turn_id)}">How it ran</button>` : ""}</div>`;
-  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
+  const deferred = (plan.deferred || []).map((t) => agentHTML(agents[t.id] ? { ...agents[t.id], title: `${t.title} · deferred to cloud` } : { id: t.id, title: t.title, task: t.task, status: "deferred" }, expanded.has(t.id))).join("");
+  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}${deferred}</div>`;
 }
 
 function answerHTML(text, meta, { streaming = false, isLast = false, flow = null, flowLink = false } = {}) {
@@ -437,7 +523,8 @@ function answerHTML(text, meta, { streaming = false, isLast = false, flow = null
 function agentsFromResults(wf) {
   const out = {};
   const byRole = {};
-  for (const t of wf.plan.tasks) byRole[t.role] = t.id;
+  for (const t of [...wf.plan.tasks, ...(wf.plan.deferred || [])]) byRole[t.role] = t.id;
+  for (const t of [...wf.plan.tasks, ...(wf.plan.deferred || [])]) if ((wf.waiting || []).includes(t.title)) out[t.id] = { id: t.id, title: t.title, task: t.task, status: "deferred" };
   for (const r of wf.results) out[byRole[r.role] || r.task_id] = { id: r.task_id, title: r.title, task: r.task, status: "done", output: r.output, targets: r.targets, steps: r.steps, tools: r.tools, failovers: r.failover ? [{ generic: true }] : [] };
   return out;
 }
@@ -546,11 +633,13 @@ function handleEvent(ev) {
       L.plan = ev.plan;
       for (const t of ev.plan.tasks) L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" };
       break;
-    case "agent_done": { const a = agentFor(); a.status = "done"; a.output = ev.result.output; a.targets = ev.result.targets; break; }
+    case "deferred": { const a = agentFor(); a.status = "deferred"; a.preview = ""; break; }
+    case "agent_done": if (ev.result.deferred) break; { const a = agentFor(); a.status = "done"; a.output = ev.result.output; a.targets = ev.result.targets; break; }
     case "final": L.final = { text: ev.content, done: true, meta: ev.meta }; break;
     case "checkpoint": L.checkpoints += 1; bumpCheckpoints(ev); break;
     case "review": L.review = ev.review; L.reviewing = false; break;
-    case "revise": for (const t of ev.tasks) { L.plan.tasks.push({ id: t.id, role: t.role, title: `${t.title} · ${t.added ? "added by review" : "revision"}`, task: t.task }); L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; } break;
+    case "revise": if (ev.deferred) { for (const t of ev.tasks) L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; break; }
+      for (const t of ev.tasks) { L.plan.tasks.push({ id: t.id, role: t.role, title: `${t.title} · ${t.added ? "added by review" : "revision"}`, task: t.task }); L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; } break;
     case "flow":
       L.flow = ev.flow;
       if (ev.flow.task_id) state.flows[ev.flow.task_id] = ev.flow;
@@ -698,6 +787,7 @@ $("#input").addEventListener("keydown", (e) => {
 });
 $("#newThread").addEventListener("click", newThread);
 $("#settingsBtn").addEventListener("click", () => (state.view === "settings" ? closeSettings() : openSettings()));
+$("#benchBtn").addEventListener("click", () => (state.view === "bench" ? closeSettings() : openBench()));
 $("#settings").addEventListener("click", async (e) => {
   if (e.target.closest("[data-cleanup]")) { state.confirmCleanup = true; return renderSettings(); }
   if (e.target.closest("[data-cleanup-cancel]")) { state.confirmCleanup = false; return renderSettings(); }

@@ -19,7 +19,13 @@
       <span class="muted" id="incTime"></span>
     </div>
     <div class="top-right">
-      <span class="link" id="link"><i></i><span id="linkText">Checking…</span></span>
+      <div class="link-wrap">
+        <button class="link" id="link" aria-haspopup="true" aria-expanded="false"><i></i><span id="linkText">Checking…</span></button>
+        <div class="link-pop" id="linkPop" hidden>
+          <div class="lp-t" id="lpText"></div>
+          <button class="lp-btn" id="drillBtn">Simulate losing the network</button>
+        </div>
+      </div>
       <span class="clock" id="clock"></span>
     </div>
   </header>

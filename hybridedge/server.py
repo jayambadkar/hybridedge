@@ -119,6 +119,15 @@ async def set_link(body: LinkBody):
     return router.status()
 
 
+@app.get("/api/benchmarks")
+async def benchmarks():
+    """Latest results from bench/models.py and bench/system.py."""
+    import json
+    from pathlib import Path
+    f = Path(__file__).resolve().parents[1] / "bench" / "results.json"
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
 @app.get("/api/settings")
 async def get_settings():
     """Read-only view of the provider setup and policies. Secrets are never returned."""
@@ -240,7 +249,7 @@ async def send(thread_id: str, body: MessageBody):
     if not text:
         raise HTTPException(400, "Empty message")
     if t["title"] == "New incident":
-        await store.touch_thread(thread_id, title=text[:60])
+        await store.touch_thread(thread_id, title=store.short_title(text))
     run = _start(thread_id, "message", {"messages": [{"role": "user", "content": text, "meta": {"ts": time.time()}}]}, _cfg(thread_id))
     return _sse(run)
 

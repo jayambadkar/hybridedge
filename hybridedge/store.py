@@ -95,6 +95,15 @@ async def touch_thread(thread_id: str, title: str | None = None) -> None:
         await db.commit()
 
 
+def short_title(text: str, n: int = 60) -> str:
+    """First line of a message, cut at a word boundary."""
+    t = (text or "").strip().splitlines()[0] if (text or "").strip() else "New incident"
+    if len(t) <= n:
+        return t
+    cut = t[:n].rsplit(" ", 1)[0].rstrip(",.;:—-")
+    return cut + "…"
+
+
 async def add_event(thread_id: str, text: str, priority: str, tier: str) -> dict:
     ev = {"thread_id": thread_id, "ts": time.time(), "priority": priority, "text": text, "tier": tier}
     async with aiosqlite.connect(DB) as db:

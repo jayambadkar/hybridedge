@@ -493,6 +493,10 @@ async def _quiet_close(stream: Any) -> None:
         pass
 
 
+class Deferred(Exception):
+    """Raised by a step that should wait for the cloud instead of running on the device."""
+
+
 async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emit, ctx: dict) -> dict:
     """Run ``fn(target, step_id)`` on the best target, falling through clouds then to the edge.
 

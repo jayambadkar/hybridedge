@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send
 
 from .config import settings
-from .router import EDGE, router, run_with_failover
+from .router import EDGE, Deferred, router, run_with_failover
 from .tools import TOOL_SPECS, run_tool
 
 # --------------------------------------------------------------------- roster
@@ -126,7 +126,7 @@ COMMON = """Current local time: {now}. You support first responders (police, fir
 Be concise and actionable: most important action first, short numbered steps.
 Use tools for facts: lookup_protocol for procedures (never invent protocol details), start_triage for START triage,
 log_event for significant facts/decisions. Say exactly what information is missing for safety-critical calls.
-Local SOPs, command and medical direction always take precedence."""
+Refer to places by name, never by raw coordinates. Local SOPs, command and medical direction always take precedence."""
 
 EDGE_NOTE = "\nDEGRADED MODE: you run on a small on-device model (cloud link down). Max ~100 words. Rely on tools; flag uncertainty."
 
@@ -183,6 +183,7 @@ class State(TypedDict, total=False):
     review: dict  # reviewer findings for the current turn
     review_round: int
     revisions: list[dict]
+    deferred_sent: bool  # deferred specialists already handed to the cloud this turn
     messages: Annotated[list[dict], operator.add]
     plan: dict
     results: Annotated[list[dict], merge_results]
@@ -215,6 +216,37 @@ Decide which specialists should work on the latest user message, in parallel. Us
 Respond with JSON only: {{"agents": [{{"role": "<role>", "task": "<one-sentence sub-task>"}}]}}"""
 
 
+EDGE_PLAN = """You are the {lead}. The cloud link is down, so you plan on a small on-device model.
+Rank the specialists this situation needs, most urgent first (up to {n}). Only the first {budget} run now on the device; the rest wait for the cloud.
+Specialists:
+{roster}
+{extra}
+Reply with JSON only, no prose: {{"agents": [{{"role": "<id>", "task": "<max 15 words>"}}]}}"""
+
+
+async def _edge_plan(prof: dict, conv: list[dict], emit) -> dict:
+    """Constrained planning: one short, reasoning-free call on the device model (~2-4 s).
+
+    It still decides who runs and what each specialist does; anything past the device
+    budget is kept as 'deferred' and handed to the cloud as soon as it returns."""
+    roles = prof["roles"]
+    roster = "\n".join(f'- {k}: {v["brief"].split(". ")[0]}' for k, v in roles.items())
+    prompt = EDGE_PLAN.format(lead=prof["lead"], roster=roster, budget=settings.edge_max_agents,
+                              n=min(settings.cloud_max_agents, len(roles)), extra=prof["plan_extra"])
+    step_id = uuid.uuid4().hex
+    emit({"type": "step_start", "step_id": step_id, "target": EDGE, "tier": "edge", "model": router.label(EDGE),
+          "reason": router.pick_reason()[1], "agent": "lead", "task_id": "plan", "phase": "plan"})
+    try:
+        msgs = [{"role": "system", "content": prompt}] + _fit(conv[-3:], EDGE)
+        msg = await router.stream_step(EDGE, msgs, None, emit, step_id, json_mode=True, max_tokens=220, silent=True)
+    except Exception:
+        msg = {"role": "assistant", "content": json.dumps({"agents": prof["fallback"] or []}),
+               "meta": {"target": EDGE, "tier": "edge", "model": router.label(EDGE), "step_id": step_id}}
+    msg["meta"]["budget"] = settings.edge_max_agents
+    emit({"type": "step_end", "step_id": step_id, "meta": msg["meta"], "has_tool_calls": False, "agent": "lead", "task_id": "plan", "phase": "plan"})
+    return msg
+
+
 async def plan(state: State, config: RunnableConfig) -> dict:
     emit = _emitter({"agent": "lead", "task_id": "plan"})
     prof = PROFILES[state.get("profile") or "incident"]
@@ -230,14 +262,8 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         msg["meta"]["budget"] = budget
         return msg
 
-    if not router.online and prof.get("fallback"):
-        # Constrained mode: use the profile's fixed core team instead of asking the small model to plan.
-        step_id = uuid.uuid4().hex
-        emit({"type": "step_start", "step_id": step_id, "target": EDGE, "tier": "edge", "model": router.label(EDGE),
-              "reason": router.pick_reason()[1], "agent": "lead", "task_id": "plan", "phase": "plan"})
-        msg = {"role": "assistant", "content": json.dumps({"agents": prof["fallback"]}),
-               "meta": {"target": EDGE, "tier": "edge", "model": router.label(EDGE), "budget": settings.edge_max_agents, "step_id": step_id}}
-        emit({"type": "step_end", "step_id": step_id, "meta": msg["meta"], "has_tool_calls": False, "agent": "lead", "task_id": "plan", "phase": "plan"})
+    if not router.online:
+        msg = await _edge_plan(prof, conv, emit)
     else:
         msg = await run_with_failover(call, emit, {"agent": "lead", "task_id": "plan", "phase": "plan"})
     budget = msg["meta"]["budget"]
@@ -256,13 +282,24 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         tasks = []
     if not tasks:
         tasks = [dict(t) for t in prof["fallback"]] if prof["fallback"] else [{"role": "generalist", "task": conv[-1]["content"][:300] if conv else "Assist the responder."}]
+    if msg["meta"]["target"] == EDGE and prof.get("fallback"):
+        # The core team always runs on the device, whatever the small model ranked first.
+        core = [t["role"] for t in prof["fallback"]]
+        for c in reversed(core):
+            if not any(t["role"] == c for t in tasks):
+                tasks.insert(0, next(dict(t) for t in prof["fallback"] if t["role"] == c))
+        tasks.sort(key=lambda t: core.index(t["role"]) if t["role"] in core else len(core))
+    deferred = tasks[budget:settings.cloud_max_agents] if msg["meta"]["target"] == EDGE else []
     tasks = tasks[:budget]
-    for t in tasks:
+    core_roles = [t["role"] for t in prof["fallback"]] if prof.get("fallback") else [t["role"] for t in tasks[: settings.edge_max_agents]]
+    for t in tasks + deferred:
         t["id"] = uuid.uuid4().hex[:8]
         t["title"] = ALL_ROLES[t["role"]]["title"]
-    p = {"turn_id": uuid.uuid4().hex[:8], "tasks": tasks, "planned_on": msg["meta"]["target"], "budget": budget}
+        # Core specialists keep going on the device if the cloud is lost; the rest wait for the cloud.
+        t["core"] = t["role"] in core_roles
+    p = {"turn_id": uuid.uuid4().hex[:8], "tasks": tasks, "planned_on": msg["meta"]["target"], "budget": budget, "deferred": deferred}
     emit({"type": "plan", "plan": p})
-    return {"plan": p, "results": {"__reset__": True}, "review": {}, "review_round": 0, "revisions": []}
+    return {"plan": p, "results": {"__reset__": True}, "review": {}, "review_round": 0, "revisions": [], "deferred_sent": False}
 
 
 def fan_out(state: State) -> list[Send]:
@@ -299,6 +336,8 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
     allow_tools = _steps(state) < settings.max_agent_steps - 1
 
     async def call(target: str, step_id: str) -> dict:
+        if target == EDGE and task.get("core") is False:
+            raise Deferred()
         role = ALL_ROLES[task["role"]]
         system = f"You are the {role['title']} specialist. {role['brief']}\n" + COMMON.format(now=_now())
         if role.get("report") and target != EDGE:
@@ -314,7 +353,12 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
         return await router.stream_step(target, msgs, _spec_tools(task["role"]) if allow_tools else None, emit, step_id,
                                         thinking=False if task.get("revision") else None)
 
-    msg = await run_with_failover(call, emit, ctx)
+    try:
+        msg = await run_with_failover(call, emit, ctx)
+    except Deferred:
+        # Scale down: the device runs the core team only; this specialist resumes on the cloud.
+        emit({"type": "deferred", "role": task["role"], "title": task["title"]})
+        return {"messages": [{"role": "assistant", "content": "", "meta": {"target": EDGE, "tier": "edge", "model": router.label(EDGE), "deferred": True, "step_id": uuid.uuid4().hex}}]}
     for tc in msg.get("tool_calls", []):
         emit({"type": "tool_call", "step_id": msg["meta"]["step_id"], "id": tc["id"], "name": tc["function"]["name"], "args": tc["function"]["arguments"]})
     return {"messages": [msg]}
@@ -350,6 +394,8 @@ async def s_finish(state: SpecState) -> dict:
         "tools": [tc["function"]["name"] for m in assistants for tc in m.get("tool_calls", [])],
         "failover": any(m["meta"].get("failover") for m in assistants),
     }
+    if assistants and assistants[-1]["meta"].get("deferred"):
+        result.update(deferred=True, output="", targets=[t for t in targets[:-1]])
     get_stream_writer()({"type": "agent_done", "agent": task["role"], "task_id": task["id"], "result": result})
     return {"results": [result]}
 
@@ -388,7 +434,7 @@ Use exactly these sections, each brief:
 **Public warning** — the alert text to send (Run, Hide, Tell) and places to evacuate or lock down.
 **METHANE** — one line each: Major incident, Exact location, Type, Hazards, Access, Number of casualties, Emergency services.
 Use the tool results exactly (names, distances, ETAs). Where the plan reviewer flagged an issue, state how it was resolved.
-Do not invent facts. Current local time: {now}."""
+Refer to places by name and distance, never by raw coordinates. Do not invent facts. Current local time: {now}."""
 
 PROFILES_EXTRA = {
     "mta": {
@@ -460,10 +506,33 @@ async def review(state: State, config: RunnableConfig) -> dict:
     prof = PROFILES[state.get("profile") or "incident"]
     rnd = state.get("review_round", 0)
     results = _latest_by_role(state)
-    if not prof.get("review") or len(results) < 2 or not router.online:
-        return {"revisions": []}
     emit = _emitter({"agent": "review", "task_id": "review"})
     thread_id = config["configurable"]["thread_id"]
+    plan_ = state.get("plan") or {}
+    by_id = {t["id"]: t for t in plan_.get("tasks", [])}
+    deferred = list(plan_.get("deferred") or []) if not state.get("deferred_sent") else []
+    deferred += [by_id[r["task_id"]] for r in results if r.get("deferred") and r["task_id"] in by_id]
+    results = [r for r in results if not r.get("deferred")]
+    if deferred and router.online and not state.get("deferred_sent"):
+        # Planned on the device, cloud is back: run the specialists the device had to leave out.
+        tasks = [{**t, "deferred": True, "previous": ""} for t in deferred]
+        emit({"type": "revise", "deferred": True, "tasks": [{k: v for k, v in t.items() if k != "previous"} for t in tasks]})
+        return {"revisions": tasks, "deferred_sent": True}
+    if not prof.get("review") or len(results) < 2:
+        return {"revisions": []}
+    if not router.online:
+        # Constrained mode: no LLM reviewer, but the deterministic cross-checks still run on the device.
+        if not prof.get("check_tool"):
+            return {"revisions": []}
+        call_id = f"chk_{uuid.uuid4().hex[:8]}"
+        emit({"type": "tool_call", "step_id": call_id, "id": call_id, "name": prof["check_tool"], "args": "{}"})
+        _, checks = await run_tool(prof["check_tool"], "{}", thread_id, "edge")
+        emit({"type": "tool_result", "id": call_id, "name": prof["check_tool"], "result": checks})
+        issues = [{**i, "fix": "", "source": "check"} for i in checks.get("issues", [])]
+        rv = {"verdict": checks.get("summary") or (f"{len(issues)} issue(s) found" if issues else "Plan is consistent."),
+              "issues": issues, "device": True, "deferred": [t["title"] for t in deferred]}
+        emit({"type": "review", "review": rv, "round": rnd})
+        return {"review": rv, "revisions": [], "review_round": rnd + 1}
     checks: dict = {"issues": []}
     if prof.get("check_tool"):
         call_id = f"chk_{uuid.uuid4().hex[:8]}"
@@ -545,8 +614,11 @@ def route_review(state: State):
 
 async def synthesize(state: State, config: RunnableConfig) -> dict:
     p = state["plan"]
-    results = _latest_by_role(state)
-    workflow = {"plan": p, "results": results, "all_results": state.get("results", []), "review": state.get("review") or {}}
+    latest = _latest_by_role(state)
+    results = [r for r in latest if not r.get("deferred")]
+    done_roles = {r["role"] for r in results}
+    waiting = [t["title"] for t in p.get("deferred") or [] if t["role"] not in done_roles] + [r["title"] for r in latest if r.get("deferred")]
+    workflow = {"plan": p, "results": results, "waiting": waiting, "all_results": state.get("results", []), "review": state.get("review") or {}}
     ctx = {"agent": "lead", "task_id": "synth", "phase": "synthesize"}
     emit = _emitter(ctx)
     prof = PROFILES[state.get("profile") or "incident"]
@@ -566,6 +638,8 @@ async def synthesize(state: State, config: RunnableConfig) -> dict:
     async def call(target: str, step_id: str) -> dict:
         system = prof["synth"].format(now=_now()) + (EDGE_NOTE if target == EDGE else "")
         content = f"Responder request: {user_req}\n\nSpecialist reports:\n{reports}"
+        if waiting:
+            content += f"\n\nNot yet available (waiting for the cloud link): {', '.join(waiting)}. Say so in one line."
         if target == EDGE and len(content) > settings.edge_context_chars:
             content = content[: settings.edge_context_chars] + "\n...(truncated)"
         # The brief merges finished reports: start writing straight away instead of reasoning first.

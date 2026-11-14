@@ -55,11 +55,11 @@ const save = () => { try { const { link, busy, queued, ...rest } = S; localStora
 function md(src) {
   const lines = esc(src || "").split("\n");
   let html = "", list = null, table = null;
-  const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "$1");
+  const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "$1").replace(/&lt;br\s*\/?&gt;/gi, "<br>");
   const closeTable = () => {
     if (!table) return;
-    const [head, ...rows] = table;
-    html += `<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    const [head, ...rows] = table.head ? table : [null, ...table];
+    html += `<table>${head ? `<thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead>` : ""}<tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
     table = null;
   };
   const close = () => { closeTable(); if (list) { html += `</${list}>`; list = null; } };
@@ -68,7 +68,7 @@ function md(src) {
     if (/^\s*\|.*\|\s*$/.test(line)) {
       if (list) { html += `</${list}>`; list = null; }
       const cells = line.trim().slice(1, -1).split("|").map((c) => c.trim());
-      if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c))) { if (table && table.length === 1) table.head = true; continue; }
       (table ||= []).push(cells);
       continue;
     }
@@ -105,14 +105,29 @@ async function pollLink() {
   try {
     const s = await (await fetch(`${API}/status`)).json();
     const prev = S.link; S.link = s;
-    $("#link").className = `link ${s.connected ? "" : "device"}`;
-    $("#linkText").textContent = s.connected ? `Cloud · ${s.label}` : s.network ? "Device only" : "No network";
+    $("#link").className = `link ${s.connected ? "" : "device"} ${s.drill ? "drill" : ""}`;
+    $("#linkText").textContent = s.connected ? `Cloud · ${s.label}` : s.drill ? "Drill · Device only" : s.network ? "Device only" : "No network";
+    renderLinkPop();
+    if (prev && prev.connected !== s.connected) renderReview();
     if (prev && prev.connected !== s.connected) toast(s.connected ? `Cloud back · ${s.label}` : "Cloud lost · analysis runs on this device", s.connected);
   } catch {
     $("#link").className = "link down"; $("#linkText").textContent = "Agents API offline";
   }
   setTimeout(pollLink, 1500);
 }
+function renderLinkPop() {
+  const s = S.link; if (!s) return;
+  $("#lpText").textContent = s.drill ? "Drill: all clouds are disconnected for this app. Analysis runs on this device." : s.connected ? `Analysis runs on ${s.label} (${s.model}).` : "No cloud reachable. Analysis runs on this device.";
+  $("#drillBtn").textContent = s.drill ? "End drill" : "Simulate losing the network";
+  $("#drillBtn").className = `lp-btn ${s.drill ? "end" : ""}`;
+}
+$("#link").addEventListener("click", (e) => { e.stopPropagation(); const p = $("#linkPop"); p.hidden = !p.hidden; $("#link").setAttribute("aria-expanded", String(!p.hidden)); });
+document.addEventListener("click", (e) => { if (!e.target.closest(".link-wrap")) $("#linkPop").hidden = true; });
+$("#drillBtn").addEventListener("click", async () => {
+  const on = !(S.link && S.link.drill);
+  await fetch("/api/link", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ offline: on }) });
+  $("#linkPop").hidden = true;
+});
 setInterval(() => {
   $("#clock").textContent = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   if (S.started) { const m = Math.floor((Date.now() - S.started) / 60000); $("#incTime").textContent = `Declared ${hhmm(S.started)} · ${m} min`; }
@@ -222,13 +237,16 @@ function renderAgents() {
   if (w) {
     const dev = !w.target || w.target === "edge";
     $("#where").className = `where ${dev ? "device" : "cloud"}`;
-    $("#where").innerHTML = `<b>${S.busy ? "Running on" : "Last run on"} ${esc(providerName(w.target))}</b>${w.reason ? ` — ${esc(w.reason)}` : ""}`;
+    // Only explain the routing when it is not the obvious case (primary cloud, healthy).
+    const primary = S.link && S.link.primary;
+    const why = w.reason && (dev || w.target !== primary) ? ` — ${esc(w.reason)}` : "";
+    $("#where").innerHTML = `<b>${S.busy ? "Running on" : "Ran on"} ${esc(providerName(w.target))}</b>${why}`;
   } else { $("#where").className = "where"; $("#where").textContent = ""; }
   $("#agents").innerHTML = S.order.map((id) => {
     const a = S.agents[id]; const dev = a.target === "edge"; const open = openAgents.has(id);
     const think = a.status === "running" && (a.thought || a.live)
       ? `<div class="think">${a.live ? `<span class="tk-label">Writing</span>${esc(tail(a.live, 360))}` : `<span class="tk-label">Thinking</span>${esc(tail(a.thought, 360))}`}</div>` : "";
-    return `<li class="${open ? "open" : ""}"><span class="dot ${a.status}"></span><div><div class="ag-n ag-row" data-ag="${esc(id)}">${esc(a.title)}${a.revision ? `<span class="rev">Revision</span>` : ""}${a.added ? `<span class="rev">Added by review</span>` : ""}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}${a.output ? `<span class="ag-more">${open ? "Hide report" : "Report"}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div>${think}${open && a.output ? `${a.thought ? `<details class="reasoning"><summary>Reasoning</summary><div>${esc(a.thought)}</div></details>` : ""}<div class="ag-report md">${md(a.output)}</div>` : ""}</div></li>`;
+    return `<li class="${open ? "open" : ""}"><span class="dot ${a.status}"></span><div><div class="ag-n ag-row" data-ag="${esc(id)}">${esc(a.title)}${a.revision ? `<span class="rev">Revision</span>` : ""}${a.added ? `<span class="rev">Added by review</span>` : ""}${a.deferred ? `<span class="rev def">${a.status === "deferred" ? "Waits for cloud" : "Deferred to cloud"}</span>` : ""}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}${a.output ? `<span class="ag-more">${open ? "Hide report" : "Report"}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div>${think}${open && a.output ? `${a.thought ? `<details class="reasoning"><summary>Reasoning</summary><div>${esc(a.thought)}</div></details>` : ""}<div class="ag-report md">${md(a.output)}</div>` : ""}</div></li>`;
   }).join("") || (S.busy ? `<li><span class="dot running"></span><div><div class="ag-n">Incident commander</div><div class="ag-a">Choosing advisers…</div>${S.planThought ? `<div class="think"><span class="tk-label">Thinking</span>${esc(tail(S.planThought, 420))}</div>` : ""}</div></li>` : `<li class="placeholder">Runs after each report.</li>`);
   $("#howBtn").hidden = !S.flow;
   renderReview();
@@ -243,7 +261,9 @@ function renderReview() {
   const revised = new Set((r.revisions || []).map((x) => x.role));
   const items = (r.issues || []).map((i) => `<li class="${esc(i.severity)}"><span class="sev">${esc(i.severity)}</span><span class="own">${esc(ROLE_TITLE[i.owner] || i.owner)}</span> — ${esc(i.issue)}${i.fix ? ` <span class="muted">Fix: ${esc(i.fix)}</span>` : ""}${i.severity === "high" && revised.has(i.owner) ? `<span class="st">${(r.revisions || []).find((x) => x.role === i.owner && x.added) ? "Specialist added" : "Sent back"}</span>` : ""}</li>`).join("");
   const after = r.after_revision ? `<div class="after">${r.after_revision.issues.length ? `After revision, still open: ${r.after_revision.issues.map((i) => esc(i.issue)).join(" · ")}` : "After revision: no conflicts left."}</div>` : "";
-  el.innerHTML = `<h4>Plan review</h4><p>${esc(r.verdict)}</p>${items ? `<ul class="issues">${items}</ul>` : ""}${after}`;
+  const dev = r.device ? `<div class="after">Checked on the device with rule-based checks. ${r.deferred && r.deferred.length ? `${esc(r.deferred.join(", "))} will run when the cloud is back.` : ""}</div>` : "";
+  const rerun = r.device && r.deferred && r.deferred.length && S.link && S.link.connected && !S.busy ? `<div class="rerun"><button id="rerunCloud">Run full analysis on ${esc(S.link.label)}</button><span class="muted">Adds ${esc(r.deferred.join(", "))}</span></div>` : "";
+  el.innerHTML = `<h4>Plan review${r.device ? " · on device" : ""}</h4><p>${esc(r.verdict)}</p>${dev}${rerun}${items ? `<ul class="issues">${items}</ul>` : ""}${after}`;
 }
 const ROLE_TITLE = { intelligence: "Intelligence", firearms: "Firearms tactics", zones: "Zones and cordons", casualties: "Casualty care", public_warning: "Public warning" };
 function renderCasualties() {
@@ -298,7 +318,7 @@ async function pushContext() {
 function describe(r, i) {
   return `Report ${i + 1} at ${hhmm(r.t * 1000)} — ${r.type} at ${nearest(r)}: ${r.text}.${r.attackers ? ` Attackers: ${r.attackers}.` : ""}${r.weapon && r.weapon !== "unknown" ? ` Weapon: ${r.weapon}.` : ""}${r.casualties ? ` Casualties: ${r.casualties}.` : ""}`;
 }
-async function analyse() {
+async function analyse(rerun = false) {
   if (S.busy) { S.queued = true; return; }
   S.busy = true; S.queued = false; S.agents = {}; S.order = []; S.where = null; S.brief = ""; S.review = null; S.planThought = ""; S.synthThought = ""; openAgents.clear();
   renderAll();
@@ -306,7 +326,9 @@ async function analyse() {
     await ensureSession();
     await pushContext();
     const latest = S.reports[S.reports.length - 1];
-    const input = S.reports.length === 1
+    const input = rerun
+      ? `The cloud is back. Re-run the full analysis of all ${S.reports.length} report(s) with every adviser and the plan review, then produce an updated commander's brief.`
+      : S.reports.length === 1
       ? `Marauding terrorist attack declared in Helsinki city centre. ${describe(latest, 0)} ARVs available: ${S.resources.arv}. Ambulances: ${S.resources.ambulance}. Produce the commander's brief.`
       : `New report. ${describe(latest, S.reports.length - 1)} Update the assessment and brief.`;
     const r = await fetch(`${API}/responses`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ session_id: S.sessionId, input, stream: true, source: "incident-command" }) });
@@ -359,6 +381,7 @@ function onEvent(ev) {
     case "hybridedge.plan":
       S.order = ev.plan.tasks.map((t) => t.id);
       for (const t of ev.plan.tasks) S.agents[t.id] = { title: t.title, status: "queued", action: t.task, target: null };
+      for (const t of ev.plan.deferred || []) { S.agents[t.id] = { title: t.title, status: "deferred", action: `Waits for cloud: ${t.task}`, target: null, deferred: true }; S.order.push(t.id); }
       renderAgents(); break;
     case "hybridedge.tool_call":
       if (ev.task_id === "review" && !S.agents.review) { S.agents.review = { title: "Plan review", status: "running", action: "Checking the plan for conflicts and gaps…", target: null }; S.order.push("review"); }
@@ -388,6 +411,7 @@ function onEvent(ev) {
       S.where = { target: ev.to, reason: ev.reason };
       schedule(renderAgents); break;
     case "hybridedge.agent_done":
+      if (a && ev.result && ev.result.deferred) break;
       if (a) {
         a.status = "done"; a.output = (ev.result && ev.result.output) || "";
         if (!a.result || /…$/.test(a.action)) { a.action = "Report ready"; a.tone = "good"; }
@@ -395,9 +419,13 @@ function onEvent(ev) {
       save(); schedule(renderAgents); break;
     case "hybridedge.review":
       S.review = ev.review;
-      if (S.agents.review) { S.agents.review.status = "done"; S.agents.review.action = ev.review.verdict || "Review done"; S.agents.review.tone = (ev.review.issues || []).length ? "warn" : "good"; }
+      if (S.agents.review) { S.agents.review.status = "done"; { const n = (ev.review.issues || []).length, back = (ev.review.revisions || []).length; S.agents.review.action = n ? `${n} issue${n > 1 ? "s" : ""} found${back ? ` · ${back} sent back` : ""}${ev.review.device ? " · rule checks on device" : ""}` : "No conflicts found"; } S.agents.review.tone = (ev.review.issues || []).length ? "warn" : "good"; }
       save(); schedule(renderAgents); break;
+    case "hybridedge.deferred":
+      { const ag = S.agents[ev.task_id]; if (ag) Object.assign(ag, { status: "deferred", action: "Cloud lost: waits for the cloud", deferred: true, tone: "warn", live: "", thought: "" }); }
+      schedule(renderAgents); break;
     case "hybridedge.revise":
+      if (ev.deferred) { for (const t of ev.tasks) if (S.agents[t.id]) Object.assign(S.agents[t.id], { status: "queued", action: `Cloud is back: ${t.task}`, tone: "good" }); schedule(renderAgents); break; }
       for (const t of ev.tasks) { S.agents[t.id] = { title: t.title, status: "queued", action: t.added ? "Added by the plan review" : "Revising after review", target: null, revision: !t.added, added: !!t.added, tone: "warn" }; S.order.push(t.id); }
       schedule(renderAgents); break;
     case "hybridedge.flow":
@@ -502,3 +530,5 @@ $("#endEx").addEventListener("click", () => {
 renderAll();
 drawAll();
 pollLink();
+
+document.addEventListener("click", (e) => { if (e.target.closest("#rerunCloud")) analyse(true); });
