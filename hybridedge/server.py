@@ -72,6 +72,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="HybridEdgeLLM", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_stale_assets(request, call_next):
+    """Always revalidate the web app's files so a reload picks up the newest UI."""
+    resp = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
 def graph():
     return app.state.graph
 
@@ -169,6 +178,54 @@ async def set_link(body: LinkBody):
     if not router.offline:
         await router.check()
     return router.status()
+
+
+@app.get("/api/settings")
+async def get_settings():
+    """Read-only view of the provider setup and policies. Secrets are never returned."""
+
+    def hint(key: str) -> str | None:
+        return f"…{key[-4:]}" if key else None
+
+    return {
+        "providers": [
+            {
+                "name": p.name,
+                "label": p.label,
+                "priority": i + 1,
+                "base_url": p.base_url or None,
+                "model": p.model,
+                "model_label": settings.cloud_model_label,
+                "hardware": p.hardware,
+                "standby": p.standby,
+                "capacity": p.capacity,
+                "api_key": hint(p.api_key),
+            }
+            for i, p in enumerate(settings.providers)
+        ],
+        "edge": {
+            "base_url": settings.edge_base_url,
+            "model": settings.edge_model,
+            "label": settings.edge_label,
+            "concurrency": settings.edge_concurrency,
+            "context_chars": settings.edge_context_chars,
+        },
+        "scaling": {
+            "cloud_max_agents": settings.cloud_max_agents,
+            "edge_max_agents": settings.edge_max_agents,
+            "max_agent_steps": settings.max_agent_steps,
+            "cloud_thinking": settings.cloud_thinking,
+        },
+        "failover": {
+            "health_interval_s": settings.health_interval_s,
+            "health_timeout_s": settings.health_timeout_s,
+            "fail_threshold": settings.fail_threshold,
+            "first_token_timeout_s": settings.first_token_timeout_s,
+            "stall_timeout_s": settings.stall_timeout_s,
+            "network_watch_s": 0.5,
+        },
+        "checkpoints": {"path": str(settings.data_dir / "checkpoints.db"), "durability": "sync"},
+    }
 
 
 @app.get("/api/threads")

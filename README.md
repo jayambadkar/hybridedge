@@ -44,21 +44,36 @@ every subgraph step is written to disk before the next one starts.
   is back.
 
 **Scaling up and down**: the planner can fan out to `CLOUD_MAX_AGENTS` (4) specialists when
-a cloud is up and `EDGE_MAX_AGENTS` (2) on the device. Each LLM step picks the best target
-*at that moment*. A workflow planned in the cloud keeps going on the laptop if the link drops
-(the on-device model is limited to one generation at a time), and speeds back up as soon as
-a cloud returns.
+a cloud is up and `EDGE_MAX_AGENTS` (2) on the device. Routing is decided **per LLM step**, not
+per task:
+- Steps go to the highest-priority healthy cloud that has free capacity (`<NAME>_CONCURRENCY`,
+  default 32 concurrent generations).
+- When that cloud is full, the overflow goes to the next cloud. A cold standby (Modal) is woken
+  only when the primary is down *or* full, so it costs nothing during normal load.
+- With no usable cloud, steps run on this device, one generation at a time.
 
-**Failover** (`hybridedge/router.py`): health probes every 3 s; mid-stream cuts are detected
-instantly (cut event), and stalls through first-token and between-token timeouts. A failed
-step is retried on the next target (Verda → Modal → device) from the same checkpointed
-state. Modal is a **cold standby**: it isn't probed while Verda is healthy, so it scales to
-zero and costs nothing until it's needed.
+So a single task's agents can be spread across Verda, Modal and the laptop, and every step
+picks the best target at the moment it runs.
+
+**Failover** (`hybridedge/router.py`):
+- **Device connectivity** is checked every 0.5 s with an OS route lookup that sends no packets.
+  Turning off Wi-Fi cuts in-flight cloud streams immediately and routes work to the device.
+  When the network returns, the providers are re-probed straight away.
+- **Provider health** is probed every 2 s; a refused connection marks a provider down at once.
+  A stall is caught by the first-token (30 s) and between-token (10 s) timeouts.
+- **A failed step** is retried on the next target from the same checkpointed state.
 
 **UI** (`web/`): plain HTML, CSS and JS with no build step and no external assets, so it
-loads offline. It has a status pill with the failover order and drill toggles (simulate an
-outage at one provider, or disconnect all clouds), a degraded-mode banner, live per-agent
-progress, inline failover notes, and a checkpoints / incident-log inspector.
+loads offline.
+- **Status bar**: a full-width banner showing Connected / Reconnecting / Offline / No network.
+- **Status menu**: a read-only view of where agents are running.
+- **Settings**: provider setup, live load and health, plus a labelled **Test mode** with
+  outage drills.
+- **Agent progress**: live per-agent progress with inline failover notes.
+- **Collapsible panels**: the sidebar, the workflow cards, and separate Incident log and
+  Checkpoints sections.
+
+Routing checks: `PYTHONPATH=. uv run python tests/check_routing.py`.
 
 ## Cloud deployments
 

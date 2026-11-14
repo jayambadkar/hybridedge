@@ -18,7 +18,8 @@ const state = {
   thread: null, // server view: {thread, messages, checkpoints, events, running, next}
   live: null, // in-flight turn
   sending: false,
-  tab: "checkpoints",
+  view: "chat", // "chat" | "settings"
+  settings: null,
   prevActive: null,
 };
 
@@ -34,11 +35,13 @@ function tag(target, extra = "") {
 }
 function ago(ts) {
   const s = Math.max(0, Date.now() / 1000 - ts);
-  if (s < 60) return "just now";
+  if (s < 60) return "Just now";
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return new Date(ts * 1000).toLocaleDateString();
 }
+const cap = (s) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const ROLE_TITLES = { lead: "Workflow", medical: "Medical", fire_hazmat: "Fire & Hazmat", scene_safety: "Scene Safety", comms: "Command & Comms", generalist: "Field Assistant" };
 const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 function md(src) {
@@ -69,7 +72,9 @@ async function api(path, opts = {}) {
 }
 
 /* ------------------------------------------------------------------- status */
+let pollTimer = 0;
 async function pollStatus() {
+  clearTimeout(pollTimer);
   try {
     const s = await api("/api/status");
     const prev = state.prevActive;
@@ -81,7 +86,8 @@ async function pollStatus() {
     state.status = null;
   }
   renderStatus();
-  setTimeout(pollStatus, 1500);
+  clearTimeout(pollTimer); // an event-triggered poll may have run concurrently: keep exactly one loop
+  pollTimer = setTimeout(pollStatus, 1000);
 }
 
 function onLinkChange(from, to) {
@@ -112,43 +118,64 @@ function renderStatus() {
     text.innerHTML = `On-device <span class="hw">· ${esc(s.edge.model)}</span>`;
   }
 
-  const b = $("#banner");
-  if (s && s.active === "edge") {
-    b.hidden = false;
-    b.innerHTML = s.edge.ok
-      ? `<b>On-device mode.</b><span class="muted">${s.offline ? "Link disabled." : "No cloud reachable."} Smaller model, up to ${s.budget.max_agents} agents — workflows continue and stay checkpointed.</span>`
-      : `<b>No model available.</b><span class="muted">Cloud unreachable and the local model (Ollama) is not running.</span>`;
-  } else b.hidden = true;
+  renderStatusBar(s);
 
-  // sidebar compute
-  if (s) {
-    const rows = s.providers.map((p) => {
-      const cls = p.usable ? "ok" : p.idle ? "idle" : p.configured ? "bad" : "idle";
-      const r = s.offline ? "offline" : p.usable ? `${p.latency_ms ?? "–"} ms` : p.disabled ? "outage" : p.idle ? "standby" : p.configured ? "down" : "not set";
-      return `<div class="row"><span class="sdot ${cls}"></span><b>${esc(p.label)}</b><span class="muted">${esc(p.hardware)}</span><span class="r">${r}</span></div>`;
-    });
-    rows.push(`<div class="row"><span class="sdot ${s.edge.ok ? "edge" : "bad"}"></span><b>This device</b><span class="muted">Bolt E4B</span><span class="r">${s.edge.ok ? "ready" : "down"}</span></div>`);
-    $("#compute").innerHTML = `<div class="cap">Compute</div>${rows.join("")}`;
-  }
   if (!$("#linkPop").hidden) renderPopover();
+  if (state.view === "settings") renderSettings();
   $("#send").disabled = state.sending || !$("#input").value.trim();
+}
+
+function renderStatusBar(s) {
+  const bar = $("#statusBar");
+  let cls, title, detail;
+  if (!s) {
+    cls = "sb-down"; title = "Edge server unreachable"; detail = "The app can't reach the HybridEdge server on this device. Restart it with ./start.sh.";
+  } else if (s.active !== "edge") {
+    const p = s.providers.find((x) => x.name === s.active);
+    cls = "sb-online"; title = "Connected";
+    detail = `Cloud agents on ${p.label} · ${p.hardware}${p.latency_ms != null ? ` · ${p.latency_ms} ms` : ""} · Up to ${s.budget.max_agents} agents in parallel`;
+  } else if (!s.edge.ok) {
+    cls = "sb-down"; title = "No model available"; detail = "No cloud is reachable and the on-device model (Ollama) isn't running.";
+  } else if (!s.network.up) {
+    cls = "sb-nonet"; title = "Offline — this device has no network";
+    detail = `Running entirely on this device (${s.edge.model}) · Up to ${s.budget.max_agents} agents · Everything is checkpointed locally and reconnects automatically`;
+  } else if (s.offline) {
+    cls = "sb-edge"; title = "Offline — clouds disconnected (drill)";
+    detail = `Running on this device (${s.edge.model}) · End the drill in Settings → Test mode to reconnect`;
+  } else if (s.reconnecting) {
+    cls = "sb-reconnect"; title = "Reconnecting…";
+    detail = "Network is back — checking cloud providers. Work continues on this device in the meantime.";
+  } else {
+    cls = "sb-edge"; title = "Offline — no cloud reachable";
+    detail = `Network is up but no cloud provider responded · Running on this device (${s.edge.model}) · Up to ${s.budget.max_agents} agents`;
+  }
+  bar.className = `statusbar ${cls}`;
+  requestAnimationFrame(() => document.documentElement.style.setProperty("--sb-h", bar.offsetHeight + "px"));
+  bar.querySelector(".sb-title").textContent = title;
+  bar.querySelector(".sb-detail").textContent = detail;
+  document.title = s && s.active !== "edge" ? "HybridEdge" : "HybridEdge · Offline";
+}
+
+function providerState(p, s) {
+  if (!p.configured) return ["idle", "Not set up"];
+  if (!s.network.up) return ["bad", "No network"];
+  if (s.offline || p.disabled) return ["warn", "Drill: disconnected"];
+  if (p.usable) return ["ok", s.active === p.name ? `Connected · ${p.latency_ms ?? "–"} ms` : `Ready · ${p.latency_ms ?? "–"} ms`];
+  if (p.idle) return ["idle", "Standby"];
+  return ["bad", "Unreachable"];
 }
 
 function renderPopover() {
   const s = state.status;
   if (!s) return;
-  const pop = $("#linkPop");
-  const provs = s.providers.map((p, i) => {
-    const d = !p.configured ? "Not configured" : p.disabled ? "Simulated outage" : p.usable ? `${esc(p.model)} · ${p.latency_ms} ms` : p.idle ? "Cold standby — wakes on failover" : `Unreachable · ${esc(p.last_error || "")}`;
-    const dot = p.usable ? "ok" : p.idle ? "idle" : "bad";
-    return `<div class="prov"><span class="order">${i + 1}</span><span class="sdot ${dot}"></span><div class="grow"><div class="n">${esc(p.label)} <span class="muted">· ${esc(p.hardware)}</span></div><div class="d">${d}</div></div>
-      <button class="switch warn ${p.disabled ? "on" : ""}" data-outage="${esc(p.name)}" title="Simulate outage" aria-label="Simulate ${esc(p.label)} outage"></button></div>`;
+  const rows = s.providers.map((p) => {
+    const [cls, text] = providerState(p, s);
+    return `<div class="prov"><span class="sdot ${cls === "ok" ? "ok" : cls === "idle" ? "idle" : cls === "warn" ? "edge" : "bad"}"></span><div class="grow"><div class="n">${esc(p.label)}</div><div class="d">${esc(p.hardware)} · Cloud</div></div><span class="pill ${cls}">${esc(text)}</span></div>`;
   }).join("");
-  pop.innerHTML = `<div class="pop-h">Failover order</div>${provs}
-    <div class="prov"><span class="order">${s.providers.length + 1}</span><span class="sdot ${s.edge.ok ? "edge" : "bad"}"></span><div class="grow"><div class="n">This device</div><div class="d">${esc(s.edge.model)} · always available</div></div></div>
+  $("#linkPop").innerHTML = `<div class="pop-h">Where agents run</div>${rows}
+    <div class="prov"><span class="sdot ${s.edge.ok ? "edge" : "bad"}"></span><div class="grow"><div class="n">This device</div><div class="d">${esc(s.edge.model)} · Used when offline</div></div><span class="pill ${s.edge.ok ? (s.active === "edge" ? "warn" : "idle") : "bad"}">${s.edge.ok ? (s.active === "edge" ? "In use" : "Ready") : "Not running"}</span></div>
     <div class="pop-sep"></div>
-    <div class="prov"><div class="grow"><div class="n">Disconnect all clouds</div><div class="d">Simulate losing the network</div></div><button class="switch warn ${s.offline ? "on" : ""}" data-offline aria-label="Disconnect all clouds"></button></div>
-    <div class="pop-note">Toggles are for drills. Switching mid-answer fails over instantly from the last checkpoint.</div>`;
+    <button class="pop-link" data-open-settings>Settings and test mode →</button>`;
 }
 
 async function setLink(body) {
@@ -157,6 +184,93 @@ async function setLink(body) {
   state.prevActive = state.status.active;
   if (prev && prev !== state.status.active) onLinkChange(prev, state.status.active);
   renderStatus();
+}
+
+/* ----------------------------------------------------------------- settings */
+async function openSettings() {
+  state.view = "settings";
+  try { state.settings = await api("/api/settings"); } catch { state.settings = null; }
+  $("#feed").hidden = true;
+  $(".composer-wrap").hidden = true;
+  $("#settings").hidden = false;
+  $("#settingsBtn").classList.add("on");
+  $("#title").textContent = "Settings";
+  $("#sidebar").classList.remove("open");
+  renderSettings();
+}
+
+function closeSettings() {
+  if (state.view !== "settings") return;
+  state.view = "chat";
+  $("#feed").hidden = false;
+  $(".composer-wrap").hidden = false;
+  $("#settings").hidden = true;
+  $("#settingsBtn").classList.remove("on");
+  $("#title").textContent = state.thread?.thread?.title || "New incident";
+}
+
+function drillsHTML(s) {
+  if (!s) return "";
+  const row = (title, desc, active, attrs) => `<div class="drill-row"><div class="grow"><div class="n">${title}</div><div class="d">${desc}</div></div>
+    <button class="btn-sm ${active ? "danger" : ""}" ${attrs}>${active ? "End drill" : "Start drill"}</button></div>`;
+  const rows = s.providers.filter((p) => p.configured).map((p) =>
+    row(`Simulate a ${esc(p.label)} outage`, `Agents switch to the next provider mid-answer.`, p.disabled, `data-outage="${esc(p.name)}" data-on="${p.disabled}"`));
+  rows.push(row("Simulate losing the network", "All clouds disconnect; agents keep working on this device.", s.offline, `data-offline data-on="${s.offline}"`));
+  return `<div class="card drills">${rows.join("")}</div>`;
+}
+
+function renderSettings() {
+  const cfg = state.settings, s = state.status;
+  if (!cfg) { $("#settings").innerHTML = `<div class="col"><div class="err">Couldn't load settings from the edge server.</div></div>`; return; }
+  const live = (name) => s?.providers?.find((p) => p.name === name);
+  const provCards = cfg.providers.map((p) => {
+    const l = live(p.name) || {};
+    const [pc, pt] = s && l.name ? providerState(l, s) : ["idle", "Unknown"];
+    const load = Math.min(100, Math.round(((l.inflight || 0) / p.capacity) * 100));
+    return `<div class="card"><div class="card-h"><span class="n">${esc(p.label)}</span><span class="muted">Priority ${p.priority}${p.priority === 1 ? " · Primary" : ""}</span>
+      <div class="r"><span class="pill ${pc}">${esc(pt)}</span></div></div>
+      <dl class="kv">
+        <dt>Endpoint</dt><dd><code>${esc(p.base_url || "—")}</code></dd>
+        <dt>Model</dt><dd>${esc(p.model_label)} <span class="muted">(<code>${esc(p.model)}</code>)</span></dd>
+        <dt>Hardware</dt><dd>${esc(p.hardware)}</dd>
+        <dt>Mode</dt><dd>${p.standby ? "Cold standby — scales to zero; woken on failover or when higher-priority clouds are full" : "Always on"}</dd>
+        <dt>Load</dt><dd>${l.inflight || 0} of ${p.capacity} concurrent · ${l.served || 0} served this session<div class="meter"><i style="width:${load}%"></i></div></dd>
+        <dt>API key</dt><dd>${p.api_key ? `Set <span class="muted">(${esc(p.api_key)})</span>` : "Not set"}</dd>
+      </dl></div>`;
+  }).join("");
+  const e = cfg.edge, le = s?.edge || {};
+  const edgeCard = `<div class="card"><div class="card-h"><span class="n">This device</span><span class="muted">Always available · Last in the failover order</span>
+    <div class="r"><span class="pill ${le.ok ? "ok" : "bad"}">${le.ok ? "Ready" : "Ollama not running"}</span></div></div>
+    <dl class="kv">
+      <dt>Endpoint</dt><dd><code>${esc(e.base_url)}</code></dd>
+      <dt>Model</dt><dd>${esc(e.label)} <span class="muted">(<code>${esc(e.model)}</code>)</span></dd>
+      <dt>Concurrency</dt><dd>${e.concurrency} generation at a time · ${le.inflight || 0} running now</dd>
+      <dt>Context budget</dt><dd>${e.context_chars.toLocaleString()} characters (older turns are trimmed on-device)</dd>
+    </dl></div>`;
+  const sc = cfg.scaling, fo = cfg.failover;
+  const policy = `<div class="card"><dl class="kv">
+      <dt>Agents per task</dt><dd>Up to ${sc.cloud_max_agents} in parallel on cloud · up to ${sc.edge_max_agents} on this device</dd>
+      <dt>Routing</dt><dd>Per step: highest-priority healthy cloud with free capacity; overflow goes to the next cloud; otherwise this device</dd>
+      <dt>Steps per agent</dt><dd>Up to ${sc.max_agent_steps}</dd>
+      <dt>Cloud reasoning</dt><dd>${sc.cloud_thinking ? "On" : "Off (lower latency)"}</dd>
+    </dl></div>
+    <div class="card"><dl class="kv">
+      <dt>Network watch</dt><dd>Every ${fo.network_watch_s}s — losing the device's network cuts cloud streams immediately</dd>
+      <dt>Health checks</dt><dd>Every ${fo.health_interval_s}s · ${fo.health_timeout_s}s timeout · down after ${fo.fail_threshold} failures (1 on connection errors)</dd>
+      <dt>Stream guards</dt><dd>${fo.first_token_timeout_s}s to first token · ${fo.stall_timeout_s}s max stall</dd>
+    </dl></div>`;
+  const cp = `<div class="card"><dl class="kv">
+      <dt>Store</dt><dd><code>${esc(cfg.checkpoints.path)}</code></dd>
+      <dt>Durability</dt><dd>Synchronous — each workflow and agent step is on disk before the next starts</dd>
+    </dl></div>`;
+  $("#settings").innerHTML = `<div class="col">
+    <div class="set-sec"><h2>Cloud providers</h2><p>Tried in order. Each agent step picks a provider at the moment it runs.</p>${provCards}</div>
+    <div class="set-sec"><h2>On-device model</h2><p>Used whenever no cloud is reachable.</p>${edgeCard}</div>
+    <div class="set-sec"><h2>Scaling and failover</h2><p>How work is spread across providers and how quickly failures are detected.</p>${policy}</div>
+    <div class="set-sec"><h2>Test mode</h2><p>Rehearse outages safely. Drills only affect this app; they don't touch the real providers.</p>${drillsHTML(s)}</div>
+    <div class="set-sec"><h2>Checkpointing</h2><p>Lets runs survive disconnects, crashes and provider switches.</p>${cp}</div>
+    <p class="muted" style="font-size:12px;margin:0">To change these settings, edit <code>.env</code> in the project folder and restart the server. API keys are never sent to the browser.</p>
+  </div>`;
 }
 
 /* ------------------------------------------------------------------ threads */
@@ -171,6 +285,7 @@ function renderThreads() {
 }
 
 async function openThread(id, { attach = true } = {}) {
+  closeSettings();
   state.threadId = id;
   localStorage.setItem("he.thread", id);
   state.thread = await api(`/api/threads/${id}`);
@@ -204,7 +319,7 @@ function lastTurnDegraded() {
 function agentHTML(a, expanded) {
   const st = a.status === "done" ? `<span class="st done">${ICON.check}</span>` : a.status === "running" ? `<span class="st"><span class="spin"></span></span>` : `<span class="st"><span class="ring"></span></span>`;
   const targets = [...new Set(a.targets || [])];
-  const chip = targets.length ? targets.map((t) => tag(t)).join("") : a.target ? tag(a.target) : `<span class="tag plain">queued</span>`;
+  const chip = targets.length ? targets.map((t) => tag(t)).join("") : a.target ? tag(a.target) : `<span class="tag plain">Queued</span>`;
   const sub = a.status === "running" && a.preview ? `<div class="agent-preview">${esc(a.preview)}</div>` : `<div class="agent-task">${esc(a.task)}</div>`;
   const notes = (a.failovers || []).map(noteHTML).join("");
   const tools = (a.tools || []).length ? `<div class="tools">${a.tools.map((t) => `<span class="tool">${esc(t)}</span>`).join("")}</div>` : "";
@@ -213,6 +328,7 @@ function agentHTML(a, expanded) {
 }
 
 const expanded = new Set();
+const collapsedWf = new Set();
 const noteHTML = (f) => f.generic
   ? `<div class="note">↪ Switched provider mid-task — resumed from checkpoint</div>`
   : `<div class="note">↪ ${esc(targetName(f.from))} dropped (${esc(f.reason)}) — resumed on ${esc(targetName(f.to))} from checkpoint</div>`;
@@ -220,8 +336,9 @@ const noteHTML = (f) => f.generic
 function workflowHTML(plan, agents, running) {
   if (!plan) return "";
   const n = plan.tasks.length;
-  const head = `<div class="wf-h"><b>${n === 1 ? "1 agent" : `${n} agents in parallel`}</b><span>· planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "running" : "complete"}</span></div>`;
-  return `<div class="wf">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
+  const collapsed = collapsedWf.has(plan.turn_id);
+  const head = `<button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>`;
+  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
 }
 
 function answerHTML(text, meta, { streaming = false, isLast = false } = {}) {
@@ -231,7 +348,7 @@ function answerHTML(text, meta, { streaming = false, isLast = false } = {}) {
   if (meta?.target) bits.push(tag(meta.target));
   if (meta?.model) bits.push(`<span>${esc(meta.model)}</span>`);
   if (meta?.ms) bits.push(`<span>${(meta.ms / 1000).toFixed(1)}s</span>`);
-  if (fail) bits.push(`<span style="color:var(--edge)">switched provider mid-run</span>`);
+  if (fail) bits.push(`<span style="color:var(--edge)">Switched provider mid-run</span>`);
   if (isLast && degraded && state.status?.active && state.status.active !== "edge" && !state.sending)
     bits.push(`<button class="btn-sm primary" data-rerun>${ICON.redo}Re-run on ${esc(targetName(state.status.active))}</button>`);
   return `<div class="answer ${degraded ? "degraded" : ""}"><div class="md ${streaming ? "cursor" : ""}">${md(text)}</div>${bits.length && !streaming ? `<div class="answer-meta">${bits.join("")}</div>` : ""}</div>`;
@@ -341,7 +458,7 @@ function handleEvent(ev) {
 function bumpCheckpoints(ev) {
   if (!state.thread) return;
   state.thread.checkpoints.unshift({ checkpoint_id: ev.checkpoint_id, ns: ev.ns, step: ev.step, source: ev.source, ts: new Date(ev.ts * 1000).toISOString(), fresh: true, agent: ev.agent });
-  if (state.tab === "checkpoints" && !$("#inspector").hidden) renderInspector();
+  if (!$("#inspector").hidden) renderInspector();
 }
 
 async function runStream(responsePromise, userText) {
@@ -413,28 +530,38 @@ function resume() {
 }
 
 /* ---------------------------------------------------------------- inspector */
+const panels = { log: true, checkpoints: false };
+try { Object.assign(panels, JSON.parse(localStorage.getItem("he.panels") || "{}")); } catch {}
+
 function renderInspector() {
-  document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === state.tab));
-  const T = state.thread;
-  const body = $("#tabBody");
-  if (!T) { body.innerHTML = `<div class="muted">Open an incident.</div>`; return; }
-  if (state.tab === "checkpoints") {
-    const cps = T.checkpoints;
-    const sub = cps.filter((c) => c.ns).length;
-    const list = cps.slice(0, 120).map((c) => {
-      const who = c.ns ? (c.agent && c.agent !== "lead" ? c.agent.replace("_", " ") : "agent subgraph") : "workflow";
-      const t = c.ts ? new Date(c.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
-      return `<div class="cp ${c.ns ? "sub" : ""} ${c.fresh ? "cp-fresh" : ""}"><div class="line"><i></i></div><div><div class="w">${esc(who)} · step ${c.step ?? "–"}</div><div class="x">${esc(c.checkpoint_id.slice(-12))} · ${esc(c.source || "")}</div></div><div class="x">${t}</div></div>`;
-    }).join("");
-    body.innerHTML = `${T.next?.length && !T.running ? `<div class="resume">Run interrupted.<button class="btn-sm" data-resume style="margin-left:auto">${ICON.play}Resume</button></div>` : ""}
-      <div class="stat"><div><div class="v">${cps.length}</div><div class="k">checkpoints</div></div><div><div class="v">${sub}</div><div class="k">in agent subgraphs</div></div></div>
-      ${list || `<div class="muted">No checkpoints yet.</div>`}
-      <div class="muted" style="font-size:11.5px;margin-top:12px">Stored in SQLite on this device. Every workflow and agent step is persisted before the next one starts.</div>`;
-  } else {
-    const evs = T.events;
-    body.innerHTML = evs.length ? [...evs].reverse().map((e) => `<div class="ev ${esc(e.priority)}"><div class="h"><b>${esc(e.priority)}</b><span>${clock(e.ts)}</span><span style="margin-left:auto">${e.tier === "edge" ? "device" : "cloud"}</span></div>${esc(e.text)}</div>`).join("")
-      : `<div class="muted">Agents add entries here as they work (triage results, hazards, decisions).</div>`;
+  for (const [name, open] of Object.entries(panels)) {
+    const h = document.querySelector(`[data-toggle="${name}"]`);
+    if (h) h.setAttribute("aria-expanded", String(open));
   }
+  const T = state.thread;
+  $("#logCount").textContent = T ? T.events.length : "";
+  $("#cpCount").textContent = T ? T.checkpoints.length : "";
+  if (!T) {
+    $("#logBody").innerHTML = $("#cpBody").innerHTML = `<div class="muted">Open an incident.</div>`;
+    return;
+  }
+  // Incident log
+  const evs = T.events;
+  $("#logBody").innerHTML = evs.length
+    ? [...evs].reverse().map((e) => `<div class="ev ${esc(e.priority)}"><div class="h"><b>${esc(cap(e.priority))}</b><span>${clock(e.ts)}</span><span style="margin-left:auto">${e.tier === "edge" ? "Device" : "Cloud"}</span></div>${esc(e.text)}</div>`).join("")
+    : `<div class="muted">Agents add entries here as they work (triage results, hazards, decisions).</div>`;
+  // Checkpoints
+  const cps = T.checkpoints;
+  const sub = cps.filter((c) => c.ns).length;
+  const list = cps.slice(0, 120).map((c) => {
+    const who = c.ns ? (ROLE_TITLES[c.agent] || "Agent subgraph") : "Workflow";
+    const t = c.ts ? new Date(c.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+    return `<div class="cp ${c.ns ? "sub" : ""} ${c.fresh ? "cp-fresh" : ""}"><div class="line"><i></i></div><div><div class="w">${esc(who)} · Step ${c.step ?? "–"}</div><div class="x">${esc(c.checkpoint_id.slice(-12))} · ${esc(cap(c.source || ""))}</div></div><div class="x">${t}</div></div>`;
+  }).join("");
+  $("#cpBody").innerHTML = `${T.next?.length && !T.running ? `<div class="resume">Run interrupted.<button class="btn-sm" data-resume style="margin-left:auto">${ICON.play}Resume</button></div>` : ""}
+    <div class="stat"><div><div class="v">${cps.length}</div><div class="k">Checkpoints</div></div><div><div class="v">${sub}</div><div class="k">In agent subgraphs</div></div></div>
+    ${list || `<div class="muted">No checkpoints yet.</div>`}
+    <div class="muted" style="font-size:11.5px;margin-top:12px">Stored in SQLite on this device. Every workflow and agent step is saved before the next one starts.</div>`;
 }
 
 /* -------------------------------------------------------------------- toast */
@@ -464,7 +591,17 @@ $("#input").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send($("#input").value); }
 });
 $("#newThread").addEventListener("click", newThread);
-$("#menuBtn").addEventListener("click", () => $("#sidebar").classList.toggle("open"));
+$("#settingsBtn").addEventListener("click", () => (state.view === "settings" ? closeSettings() : openSettings()));
+$("#settings").addEventListener("click", (e) => {
+  const o = e.target.closest("[data-outage]");
+  if (o) return setLink({ provider: o.dataset.outage, disabled: o.dataset.on !== "true" });
+  const off = e.target.closest("[data-offline]");
+  if (off) return setLink({ offline: off.dataset.on !== "true" });
+});
+$("#menuBtn").addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 760px)").matches) $("#sidebar").classList.toggle("open");
+  else setSidebar(false);
+});
 $("#threads").addEventListener("click", (e) => {
   const b = e.target.closest("[data-thread]");
   if (b && !state.sending) openThread(b.dataset.thread);
@@ -472,12 +609,22 @@ $("#threads").addEventListener("click", (e) => {
 $("#feed").addEventListener("click", (e) => {
   const chip = e.target.closest("[data-chip]");
   if (chip) return send(chip.dataset.chip);
+  const wf = e.target.closest("[data-wf]");
+  if (wf) { const id = wf.dataset.wf; collapsedWf.has(id) ? collapsedWf.delete(id) : collapsedWf.add(id); return renderFeed(); }
   const ag = e.target.closest("[data-agent]");
   if (ag) { const id = ag.dataset.agent; expanded.has(id) ? expanded.delete(id) : expanded.add(id); return renderFeed(); }
   if (e.target.closest("[data-rerun]")) return rerun();
   if (e.target.closest("[data-resume]")) return resume();
 });
-$("#tabBody").addEventListener("click", (e) => { if (e.target.closest("[data-resume]")) resume(); });
+$("#inspector").addEventListener("click", (e) => {
+  if (e.target.closest("[data-resume]")) return resume();
+  const h = e.target.closest("[data-toggle]");
+  if (h) {
+    panels[h.dataset.toggle] = !panels[h.dataset.toggle];
+    try { localStorage.setItem("he.panels", JSON.stringify(panels)); } catch {}
+    renderInspector();
+  }
+});
 $("#linkPill").addEventListener("click", (e) => {
   e.stopPropagation();
   const pop = $("#linkPop");
@@ -487,23 +634,46 @@ $("#linkPill").addEventListener("click", (e) => {
 });
 $("#linkPop").addEventListener("click", (e) => {
   e.stopPropagation();
-  const o = e.target.closest("[data-outage]");
-  if (o) return setLink({ provider: o.dataset.outage, disabled: !o.classList.contains("on") });
-  const off = e.target.closest("[data-offline]");
-  if (off) return setLink({ offline: !off.classList.contains("on") });
+  if (e.target.closest("[data-open-settings]")) {
+    $("#linkPop").hidden = true;
+    openSettings();
+  }
 });
 document.addEventListener("click", () => { $("#linkPop").hidden = true; $("#linkPill").setAttribute("aria-expanded", "false"); });
-$("#inspectorBtn").addEventListener("click", () => {
-  const ins = $("#inspector");
-  ins.hidden = !ins.hidden;
-  $("#inspectorBtn").classList.toggle("on", !ins.hidden);
-  localStorage.setItem("he.inspector", ins.hidden ? "0" : "1");
-  renderInspector();
+function setInspector(open) {
+  $("#inspector").hidden = !open;
+  $("#inspectorBtn").classList.toggle("on", open);
+  $("#inspectorBtn").setAttribute("aria-expanded", String(open));
+  try { localStorage.setItem("he.inspector", open ? "1" : "0"); } catch {}
+  if (open) renderInspector();
+}
+$("#inspectorBtn").addEventListener("click", () => setInspector($("#inspector").hidden));
+$("#inspectorClose").addEventListener("click", () => setInspector(false));
+// On narrow screens the panel overlays the page: clicking anywhere outside it closes it.
+document.addEventListener("click", (e) => {
+  if ($("#inspector").hidden || !window.matchMedia("(max-width: 980px)").matches) return;
+  if (e.target.closest("#inspector, #inspectorBtn")) return;
+  setInspector(false);
 });
-document.querySelectorAll(".tab").forEach((t) => t.addEventListener("click", () => { state.tab = t.dataset.tab; renderInspector(); }));
+const syncBarHeight = () => document.documentElement.style.setProperty("--sb-h", $("#statusBar").offsetHeight + "px");
+window.addEventListener("resize", syncBarHeight);
+function setSidebar(collapsed) {
+  $("#app").classList.toggle("sb-collapsed", collapsed);
+  try { localStorage.setItem("he.sidebar", collapsed ? "0" : "1"); } catch {}
+}
+$("#sidebarClose").addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 760px)").matches) $("#sidebar").classList.remove("open");
+  else setSidebar(true);
+});
+// The device itself reports connectivity changes; re-check immediately instead of waiting for the next poll.
+window.addEventListener("online", () => pollStatus());
+window.addEventListener("offline", () => pollStatus());
 
 (async function boot() {
-  try { if (localStorage.getItem("he.inspector") === "1") { $("#inspector").hidden = false; $("#inspectorBtn").classList.add("on"); } } catch {}
+  try {
+    if (localStorage.getItem("he.inspector") === "1") { $("#inspector").hidden = false; $("#inspectorBtn").classList.add("on"); }
+    if (localStorage.getItem("he.sidebar") === "0") $("#app").classList.add("sb-collapsed");
+  } catch {}
   pollStatus();
   await loadThreads().catch(() => {});
   let last = null;

@@ -25,7 +25,8 @@ class Provider:
     api_key: str
     model: str
     hardware: str
-    standby: bool = False  # cold standby: only probed (and thereby woken) when higher-priority clouds are down
+    standby: bool = False  # cold standby: only probed (and thereby woken) when higher-priority clouds are down/saturated
+    capacity: int = 32  # concurrent generations this endpoint should take before work overflows to the next provider
 
     @property
     def configured(self) -> bool:
@@ -46,6 +47,7 @@ def _providers() -> list[Provider]:
                 model=os.getenv(f"{up}_MODEL", "nemotron-lightning"),
                 hardware=os.getenv(f"{up}_HARDWARE", "H100"),
                 standby=os.getenv(f"{up}_STANDBY", "false").lower() == "true",
+                capacity=int(os.getenv(f"{up}_CONCURRENCY", "32")),
             )
         )
     return out
@@ -69,8 +71,8 @@ class Settings:
     edge_max_agents: int = int(os.getenv("EDGE_MAX_AGENTS", "2"))
 
     # Link monitoring / failover
-    health_interval_s: float = _f("HEALTH_INTERVAL_S", 3.0)
-    health_timeout_s: float = _f("HEALTH_TIMEOUT_S", 4.0)
+    health_interval_s: float = _f("HEALTH_INTERVAL_S", 2.0)
+    health_timeout_s: float = _f("HEALTH_TIMEOUT_S", 3.0)
     fail_threshold: int = int(os.getenv("FAIL_THRESHOLD", "2"))
     first_token_timeout_s: float = _f("FIRST_TOKEN_TIMEOUT_S", 30.0)
     stall_timeout_s: float = _f("STALL_TIMEOUT_S", 10.0)

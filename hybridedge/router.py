@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import time
 import uuid
 from typing import Any, Awaitable, Callable
@@ -22,6 +23,22 @@ from .config import Provider, settings
 
 Emit = Callable[[dict], None]
 EDGE = "edge"
+
+
+def has_network_route() -> bool:
+    """True if this device has a usable default route. A UDP ``connect`` sends no packets,
+    it only asks the OS for a route, so this is instant and safe to call twice a second.
+    Turning Wi-Fi off / losing cellular removes the route and this flips immediately."""
+    for family, addr in ((socket.AF_INET, ("1.1.1.1", 53)), (socket.AF_INET6, ("2606:4700:4700::1111", 53))):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sk:
+                sk.connect(addr)
+                ip = sk.getsockname()[0]
+                if not (ip.startswith("127.") or ip == "::1"):
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 class LinkLost(Exception):
@@ -38,6 +55,8 @@ class ProviderState:
             timeout=httpx.Timeout(connect=6.0, read=settings.first_token_timeout_s + 5, write=10.0, pool=6.0),
         )
         self.reachable = False
+        self.inflight = 0  # generations currently streaming from this provider
+        self.served = 0  # generations completed (for the settings view)
         self.disabled = False  # operator-simulated outage
         self.latency_ms: float | None = None
         self.fails = 0
@@ -53,18 +72,39 @@ class Router:
         self.edge_sem = asyncio.Semaphore(settings.edge_concurrency)
         self._http = httpx.AsyncClient()
         self.offline = False  # operator-simulated total link loss
+        self.net_up = has_network_route()  # does this device have any network at all?
+        self.net_changed_at = time.time()
         self.edge_ok = False
+        self.edge_inflight = 0
         self.changed_at = time.time()
         self.last_check: float | None = None
         self._active = self.active
-        self._task: asyncio.Task | None = None
+        self._tasks: list[asyncio.Task] = []
 
     # ------------------------------------------------------------------ status
     def usable(self, s: ProviderState) -> bool:
-        return not self.offline and not s.disabled and s.reachable and s.p.configured
+        return self.net_up and not self.offline and not s.disabled and s.reachable and s.p.configured
 
     def online_targets(self) -> list[str]:
         return [s.p.name for s in self.providers if self.usable(s)]
+
+    def saturated(self, s: ProviderState) -> bool:
+        return s.inflight >= s.p.capacity
+
+    def pick(self, exclude: list[str] | tuple = ()) -> str:
+        """Choose where the next LLM step runs.
+
+        Priority order, but load-aware: the first usable cloud with free capacity wins;
+        if every usable cloud is saturated, the least-loaded one (relative to capacity)
+        takes it; with no usable cloud, the step runs on this device.
+        """
+        clouds = [s for s in self.providers if self.usable(s) and s.p.name not in exclude]
+        if not clouds:
+            return EDGE
+        for s in clouds:
+            if not self.saturated(s):
+                return s.p.name
+        return min(clouds, key=lambda s: s.inflight / max(1, s.p.capacity)).p.name
 
     @property
     def active(self) -> str:
@@ -111,6 +151,12 @@ class Router:
             "active": self.active,
             "tier": "cloud" if self.online else "edge",
             "offline": self.offline,
+            "network": {"up": self.net_up, "changed_at": self.net_changed_at},
+            "reconnecting": self.net_up
+            and not self.offline
+            and not self.online
+            and time.time() - self.net_changed_at < 20
+            and any(s.p.configured and not s.disabled for s in self.providers),
             "providers": [
                 {
                     "name": s.p.name,
@@ -125,10 +171,13 @@ class Router:
                     "idle": self._standby_idle(s),
                     "latency_ms": s.latency_ms,
                     "last_error": s.last_error,
+                    "inflight": s.inflight,
+                    "capacity": s.p.capacity,
+                    "served": s.served,
                 }
                 for s in self.providers
             ],
-            "edge": {"ok": self.edge_ok, "model": settings.edge_label},
+            "edge": {"ok": self.edge_ok, "model": settings.edge_label, "inflight": self.edge_inflight, "capacity": settings.edge_concurrency},
             "budget": {"max_agents": settings.cloud_max_agents if self.online else settings.edge_max_agents},
             "changed_at": self.changed_at,
             "last_check": self.last_check,
@@ -136,12 +185,31 @@ class Router:
 
     # ----------------------------------------------------------------- monitor
     def start(self) -> None:
-        self._task = asyncio.create_task(self._loop())
+        self._tasks = [asyncio.create_task(self._loop()), asyncio.create_task(self._net_loop())]
 
     async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
+        for t in self._tasks:
+            t.cancel()
         await self._http.aclose()
+
+    async def _net_loop(self) -> None:
+        """Watch the device's own connectivity twice a second and react immediately."""
+        while True:
+            try:
+                up = has_network_route()
+                if up != self.net_up:
+                    self.net_up = up
+                    self.net_changed_at = time.time()
+                    if not up:
+                        for s in self.providers:
+                            s.reachable = False
+                            s.last_error = "no network on this device"
+                        self._refresh()  # aborts in-flight cloud streams right now
+                    else:
+                        asyncio.create_task(self.check())  # reconnect as soon as a cloud answers
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
 
     async def _loop(self) -> None:
         while True:
@@ -152,19 +220,21 @@ class Router:
             await asyncio.sleep(settings.health_interval_s)
 
     def _standby_idle(self, s: ProviderState) -> bool:
-        """A standby provider stays cold while some higher-priority provider is usable."""
+        """A standby stays cold while a higher-priority provider is usable and has spare capacity.
+        It is woken (probed) when the primary is down *or* saturated, so bursts overflow to it."""
         if not s.p.standby:
             return False
         for other in self.providers:
             if other is s:
                 return False
-            if self.usable(other):
+            if self.usable(other) and not self.saturated(other):
                 return True
         return False
 
     async def check(self) -> None:
         # Simulated total link loss: do not touch the network at all (also keeps standbys cold).
-        probes = [] if self.offline else [self._probe(s) for s in self.providers if not self._standby_idle(s)]
+        skip = self.offline or not self.net_up
+        probes = [] if skip else [self._probe(s) for s in self.providers if not self._standby_idle(s)]
         await asyncio.gather(*probes, self._check_edge())
         self.last_check = time.time()
         self._refresh()
@@ -182,6 +252,8 @@ class Router:
             err = None if ok else (f"HTTP {r.status_code}" if r.status_code != 200 else "model not loaded")
         except Exception as e:
             ok, err = False, type(e).__name__
+            if isinstance(e, (httpx.ConnectError, httpx.NetworkError)):
+                s.fails = settings.fail_threshold - 1  # hard network error: mark down on this probe
         if ok:
             s.latency_ms = round((time.perf_counter() - t0) * 1000)
             s.fails, s.last_error, s.reachable = 0, None, True
@@ -215,8 +287,21 @@ class Router:
         """Stream one assistant turn from ``target``. Returns an OpenAI-format assistant message."""
         if target == EDGE:
             async with self.edge_sem:  # the laptop serves one generation at a time: scale down
-                return await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
-        return await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
+                self.edge_inflight += 1
+                try:
+                    return await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
+                finally:
+                    self.edge_inflight -= 1
+        s = self.by_name[target]
+        s.inflight += 1
+        if self.saturated(s):
+            asyncio.ensure_future(self.check())  # saturation may need to wake a standby
+        try:
+            msg = await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
+            s.served += 1
+            return msg
+        finally:
+            s.inflight -= 1
 
     async def _stream(self, target, messages, tools, emit, step_id, json_mode, max_tokens, silent) -> dict:
         req: dict[str, Any] = {"messages": messages, "stream": True, "temperature": 0.3}
@@ -349,7 +434,7 @@ async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emi
     """
     tried: list[str] = []
     failed: list[dict] = []
-    target = router.active
+    target = router.pick()
     while True:
         step_id = uuid.uuid4().hex
         emit({"type": "step_start", "step_id": step_id, "target": target, "tier": "edge" if target == EDGE else "cloud", "model": router.label(target), **ctx})
@@ -363,7 +448,7 @@ async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emi
                 await asyncio.wait_for(router.check(), timeout=settings.health_timeout_s + 1)
             except Exception:
                 pass
-            target = next((t for t in router.online_targets() if t not in tried), EDGE)
+            target = router.pick(exclude=tried)
             emit({"type": "failover", "step_id": step_id, "from": failed[-1]["from"], "to": target, "reason": str(e), **ctx})
             continue
         if failed:
