@@ -497,7 +497,7 @@ class Deferred(Exception):
     """Raised by a step that should wait for the cloud instead of running on the device."""
 
 
-async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emit, ctx: dict) -> dict:
+async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emit, ctx: dict, pin_edge: str | None = None) -> dict:
     """Run ``fn(target, step_id)`` on the best target, falling through clouds then to the edge.
 
     The next target is chosen *after* each failure: a failure triggers an immediate
@@ -506,12 +506,14 @@ async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emi
     """
     tried: list[str] = []
     failed: list[dict] = []
-    target, why = router.pick_reason()
+    target, why = (EDGE, pin_edge) if pin_edge else router.pick_reason()
     while True:
         step_id = uuid.uuid4().hex
         emit({"type": "step_start", "step_id": step_id, "target": target, "tier": "edge" if target == EDGE else "cloud", "model": router.label(target), "reason": why, **ctx})
         try:
-            if target == EDGE:
+            if target == EDGE and pin_edge:
+                msg = await fn(EDGE, step_id)  # pinned: confidential work never moves to a cloud
+            elif target == EDGE:
                 msg = await _run_on_device(fn, step_id)
                 if msg is None:  # a cloud came back mid-step: restart this step there
                     new, why = router.pick_reason()

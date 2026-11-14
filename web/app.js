@@ -692,7 +692,7 @@ function handleEvent(ev) {
     case "checkpoint": L.checkpoints += 1; bumpCheckpoints(ev); break;
     case "review": L.review = ev.review; L.reviewing = false; break;
     case "revise": if (ev.deferred) { for (const t of ev.tasks) L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; break; }
-      for (const t of ev.tasks) { L.plan.tasks.push({ id: t.id, role: t.role, title: `${t.title} · ${t.added ? "added by review" : "revision"}`, task: t.task }); L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; } break;
+      for (const t of ev.tasks) { L.plan.tasks.push({ id: t.id, role: t.role, title: t.next ? t.title : `${t.title} · ${t.added ? "added by review" : "revision"}`, task: t.task }); L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; } break;
     case "flow":
       L.flow = ev.flow;
       if (ev.flow.task_id) state.flows[ev.flow.task_id] = ev.flow;

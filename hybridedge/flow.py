@@ -168,7 +168,7 @@ class FlowBuilder:
                 if task.get("deferred") and task["id"] in self.lanes:
                     self.lanes[task["id"]].update(status="queued", title=f"{task['title']} · deferred to cloud")
                     continue
-                label = "added by review" if task.get("added") else "revision"
+                label = "next step" if task.get("next") else "added by review" if task.get("added") else "revision"
                 self.lanes[task["id"]] = {"id": task["id"], "role": task["role"], "title": f"{task['title']} · {label}", "task": task["task"], "status": "queued", "steps": [], "revision": True}
                 self.order.append(task["id"])
             return True

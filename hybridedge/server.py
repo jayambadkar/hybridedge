@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
-from . import store
+from . import pathway, store, trade
 from .agents_api import api as agents_api
 from .config import ROOT, settings
 from .flow import capability, flow_from_meta
@@ -37,7 +37,20 @@ async def lifespan(app: FastAPI):
     router.start()
     async with AsyncSqliteSaver.from_conn_string(str(settings.data_dir / "checkpoints.db")) as saver:
         set_graph(build_graph(saver))
+
+        async def outbox_sync():
+            # Store-and-forward: orders saved on the device while offline go out when the link returns.
+            while True:
+                await asyncio.sleep(1.5)
+                try:
+                    if trade.link_up():
+                        trade.flush_outbox()
+                except Exception:
+                    pass
+
+        sync = asyncio.ensure_future(outbox_sync())
         yield
+        sync.cancel()
     await router.stop()
 
 
@@ -50,6 +63,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(agents_api)
+app.include_router(trade.api)
+app.include_router(pathway.api)
+
+
+@app.get("/api/trade/outbox")
+async def trade_outbox(buyer: str | None = None):
+    return [i for i in trade.STATE["outbox"] if not buyer or i["buyer"] == buyer][::-1]
+
+
+@app.post("/api/trade/reset")
+async def trade_reset():
+    trade.reset()
+    return {"ok": True}
+
+
+@app.get("/.well-known/agent-card.json", tags=["trade"])
+async def agent_card():
+    return trade.AGENT_CARD
 
 
 @app.middleware("http")

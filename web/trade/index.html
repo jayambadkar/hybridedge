@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trusted Trade Agents</title>
+  <link rel="stylesheet" href="/trade/trade.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231d4ed8'/%3E%3Cpath d='M9 17l5-9v7h5l-5 9v-7z' fill='%23fff'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="top">
+    <div class="app-name">Trusted Trade Agents</div>
+    <span class="mock">Mock data · Junction prototype</span>
+    <div class="top-right">
+      <div class="link-wrap">
+        <button class="link" id="link"><i></i><span id="linkText">Checking…</span></button>
+        <div class="link-pop" id="linkPop" hidden>
+          <div class="lp-t" id="lpText"></div>
+          <button class="lp-btn" id="drillBtn">Simulate losing the network</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="col buyer">
+      <div class="col-h"><span class="who">Buyer side</span>
+        <div class="buyers" id="buyers">
+          <button data-buyer="hotel-aurora" class="on">Hotel Aurora · Helsinki</button>
+          <button data-buyer="lagos-coop">Lekki Kitchens Co-op · Lagos</button>
+        </div>
+        <p class="net" id="net"></p>
+      </div>
+      <form class="ask" id="ask">
+        <textarea id="input" rows="2"></textarea>
+        <button class="primary" id="send">Send to agent</button>
+      </form>
+      <div class="split">
+        <div class="lane"><span class="dot cloud"></span><b>Sourcing</b><span class="muted">Nemotron 3.5 Lightning 30B · cloud · searches and quotes</span></div>
+        <div class="lane"><span class="dot device"></span><b>Procurement</b><span class="muted">Nemotron 3.5 Bolt · this device · budget and authority never leave it</span></div>
+      </div>
+      <div class="card outbox" id="outboxCard" hidden><div class="card-h"><h3>Outbox on this device</h3><span class="muted">Sends when the signal returns</span></div><div id="outbox"></div></div>
+      <ol class="steps" id="steps"><li class="placeholder">Send a request to start.</li></ol>
+      <div class="card summary" id="summary" hidden><div class="card-h"><h3>Order summary</h3><span class="muted" id="sumState"></span></div><div class="md" id="sumBody"></div></div>
+    </section>
+
+    <section class="col seller">
+      <div class="col-h"><span class="who">Wholesaler side</span><h2>Valio Aimo trade interface (mock)</h2></div>
+      <div class="card" id="policyCard"></div>
+      <div class="card"><div class="card-h"><h3>Approval queue</h3><span class="count" id="qCount"></span></div><div id="queue"></div></div>
+      <div class="card"><div class="card-h"><h3>Orders</h3></div><div id="orders"></div></div>
+      <div class="card"><div class="card-h"><h3>Audit trail</h3><span class="muted">Append-only</span></div><ol class="audit" id="audit"></ol></div>
+      <div class="foot-links"><a href="/docs#/trade" target="_blank" rel="noopener">Agent interface (OpenAPI) ↗</a><a href="/.well-known/agent-card.json" target="_blank" rel="noopener">Agent card ↗</a><button class="link-btn" id="reset">Reset demo</button></div>
+    </section>
+  </main>
+  <div class="toast" id="toast" hidden></div>
+  <script src="/trade/trade.js"></script>
+</body>
+</html>

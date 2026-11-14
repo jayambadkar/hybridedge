@@ -28,6 +28,7 @@ from langgraph.types import Send
 
 from .config import settings
 from .router import EDGE, Deferred, router, run_with_failover
+from . import pathway
 from .tools import TOOL_SPECS, run_tool
 
 # --------------------------------------------------------------------- roster
@@ -120,7 +121,23 @@ MTA_ROLES: dict[str, dict[str, Any]] = {
     },
 }
 
-ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES, **MTA_ROLES}
+TRADE_ROLES: dict[str, dict[str, Any]] = {
+    "sourcing": {
+        "title": "Sourcing",
+        "brief": "Finds products that match the request in the wholesaler's catalogue. Call search_products (with labels such as lactose-free), compare price per litre, stock and delivery date against the deadline, then call request_quote ONCE, with every line in one call, for the cheapest combination that covers the FULL quantity on time (combine SKUs when one lacks stock). Exclude anything that does not meet the requirements. With no connection the catalogue comes from the device cache and quotes are provisional (PQ- ids): still recommend the best one.",
+        "tools": ["search_products", "request_quote"],
+        "report": "### Options\nTable: SKU | product | price per litre | in stock | delivery | meets deadline.\n### Recommended quote\nQuote id, lines (SKU x units), total EUR.\n### Excluded\nBullets: what was left out and why (not the right product, misses the deadline, too expensive).",
+    },
+    "procurement": {
+        "title": "Procurement",
+        "private": True,
+        "brief": "Holds the buyer's authority. Call get_policy, check the recommended quote against it, then call place_order with that quote id and a one-sentence reason. The wholesaler decides whether a human must approve: report exactly what it returned. If it returns queued_offline, the order is saved on this device and goes out automatically when the signal returns.",
+        "tools": ["get_policy", "place_order"],
+        "report": "### Decision\nOrder id, status, total EUR, delivery date.\n### Policy check\nBullets: limit, spent today, categories, deadline.\n### For the approver\nOne line: what they need to decide, or 'Nothing: order placed'.",
+    },
+}
+
+ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES, **MTA_ROLES, **TRADE_ROLES, **pathway.ROLES}
 
 COMMON = """Current local time: {now}. You support first responders (police, fire, EMS).
 Be concise and actionable: most important action first, short numbered steps.
@@ -132,7 +149,17 @@ EDGE_NOTE = "\nDEGRADED MODE: you run on a small on-device model (cloud link dow
 
 
 def _now() -> str:
-    return time.strftime("%Y-%m-%d %H:%M")
+    return time.strftime("%A %Y-%m-%d %H:%M")
+
+
+TRADE_COMMON = """Current local time: {now}. You act for a professional kitchen buying from a food wholesaler.
+Use the tools for every fact: never invent SKUs, prices, stock, quote ids or order ids. Be concise."""
+
+
+def _common(role: str) -> str:
+    if role in pathway.ROLES:
+        return pathway.COMMON.format(now=_now())
+    return (TRADE_COMMON if role in TRADE_ROLES else COMMON).format(now=_now())
 
 
 def _clean(m: dict) -> dict:
@@ -184,6 +211,7 @@ class State(TypedDict, total=False):
     review_round: int
     revisions: list[dict]
     deferred_sent: bool  # deferred specialists already handed to the cloud this turn
+    then_sent: bool  # the profile's follow-on step has been started this turn
     messages: Annotated[list[dict], operator.add]
     plan: dict
     results: Annotated[list[dict], merge_results]
@@ -262,7 +290,15 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         msg["meta"]["budget"] = budget
         return msg
 
-    if not router.online:
+    if prof.get("fixed"):
+        # Fixed pipeline: no planning call needed.
+        tasks0 = [dict(t) for t in prof["fixed"]]
+        step_id = uuid.uuid4().hex
+        tgt = router.pick_reason()[0]
+        msg = {"role": "assistant", "content": json.dumps({"agents": tasks0}),
+               "meta": {"target": tgt, "tier": "edge" if tgt == EDGE else "cloud", "model": router.label(tgt),
+                        "budget": settings.cloud_max_agents if tgt != EDGE else settings.edge_max_agents, "step_id": step_id}}
+    elif not router.online:
         msg = await _edge_plan(prof, conv, emit)
     else:
         msg = await run_with_failover(call, emit, {"agent": "lead", "task_id": "plan", "phase": "plan"})
@@ -299,7 +335,7 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         t["core"] = t["role"] in core_roles
     p = {"turn_id": uuid.uuid4().hex[:8], "tasks": tasks, "planned_on": msg["meta"]["target"], "budget": budget, "deferred": deferred}
     emit({"type": "plan", "plan": p})
-    return {"plan": p, "results": {"__reset__": True}, "review": {}, "review_round": 0, "revisions": [], "deferred_sent": False}
+    return {"plan": p, "results": {"__reset__": True}, "review": {}, "review_round": 0, "revisions": [], "deferred_sent": False, "then_sent": False}
 
 
 def fan_out(state: State) -> list[Send]:
@@ -339,26 +375,44 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
         if target == EDGE and task.get("core") is False:
             raise Deferred()
         role = ALL_ROLES[task["role"]]
-        system = f"You are the {role['title']} specialist. {role['brief']}\n" + COMMON.format(now=_now())
+        system = f"You are the {role['title']} specialist. {role['brief']}\n" + _common(task["role"])
         if role.get("report") and target != EDGE:
             system += "\nAfter using your tools, write your report in exactly this structure (markdown):\n" + role["report"]
         if task.get("revision"):
             system += "\nThis is a REVISION requested by the plan reviewer: fix the listed issues and return your full, updated report."
-        if target == EDGE:
+        if target == EDGE and task["role"] in TRADE_ROLES:
+            system += "\nAfter your tool calls, finish in under 60 words: the quote or order id, total and status."
+        elif target == EDGE:
             system += EDGE_NOTE
         history = state.get("context", []) + [{"role": "user", "content": f"Your assigned sub-task: {task['task']}"}]
         history += [_clean(m) for m in state.get("messages", [])]
         msgs = [{"role": "system", "content": system}] + _fit(history, target)
         # Revisions fix specific reviewer issues: skip long reasoning to keep the loop quick.
         return await router.stream_step(target, msgs, _spec_tools(task["role"]) if allow_tools else None, emit, step_id,
-                                        thinking=False if task.get("revision") else None)
+                                        thinking=False if task.get("revision") else None,
+                                        max_tokens=300 if (target == EDGE and task["role"] in TRADE_ROLES) else None)
 
+    pin = "Confidential: budgets and approval rules stay on this device" if ALL_ROLES[task["role"]].get("private") else None
     try:
-        msg = await run_with_failover(call, emit, ctx)
+        msg = await run_with_failover(call, emit, ctx, pin_edge=pin)
     except Deferred:
         # Scale down: the device runs the core team only; this specialist resumes on the cloud.
         emit({"type": "deferred", "role": task["role"], "title": task["title"]})
         return {"messages": [{"role": "assistant", "content": "", "meta": {"target": EDGE, "tier": "edge", "model": router.label(EDGE), "deferred": True, "step_id": uuid.uuid4().hex}}]}
+    must = {"sourcing": "request_quote", "procurement": "place_order"}.get(task["role"]) or ALL_ROLES[task["role"]].get("must")
+    called = {tc["function"]["name"] for m in state.get("messages", []) for tc in m.get("tool_calls", [])}
+    if must and must not in called and not msg.get("tool_calls") and allow_tools:
+        # The step is not finished until its key tool has been called: nudge once instead of accepting prose.
+        nudge = [{"role": "assistant", "content": msg.get("content") or ""}, {"role": "user", "content": f"You have not called {must} yet. Do not describe it: call the tool now."}]
+        prior = [_clean(m) for m in state.get("messages", [])]
+
+        async def retry(target: str, step_id: str) -> dict:
+            role = ALL_ROLES[task["role"]]
+            system = f"You are the {role['title']} specialist. {role['brief']}\n" + _common(task["role"])
+            history = state.get("context", []) + [{"role": "user", "content": f"Your assigned sub-task: {task['task']}"}] + prior + nudge
+            return await router.stream_step(target, [{"role": "system", "content": system}] + _fit(history, target), _spec_tools(task["role"]), emit, step_id)
+
+        msg = await run_with_failover(retry, emit, ctx, pin_edge=pin)
     for tc in msg.get("tool_calls", []):
         emit({"type": "tool_call", "step_id": msg["meta"]["step_id"], "id": tc["id"], "name": tc["function"]["name"], "args": tc["function"]["arguments"]})
     return {"messages": [msg]}
@@ -436,6 +490,15 @@ Use exactly these sections, each brief:
 Use the tool results exactly (names, distances, ETAs). Where the plan reviewer flagged an issue, state how it was resolved.
 Refer to places by name and distance, never by raw coordinates. Do not invent facts. Current local time: {now}."""
 
+TRADE_SYNTH = """You are the buyer's purchasing agent. Write the ORDER SUMMARY for the head chef, using the reports below.
+Use exactly these short sections:
+**Request** — one line.
+**Order** — order id (or outbox id), status (Placed / Waiting for your approval / Saved on this device, sends when the signal returns), total EUR, delivery date.
+**Bought** — table: SKU | product | units | unit price | delivery.
+**Why this option** — two bullets.
+**Needs you** — only if approval is pending: the wholesaler's reason, in one line, and that the order is in the approval queue.
+Use the tool results exactly. Do not invent products, prices or ids. Current local time: {now}."""
+
 PROFILES_EXTRA = {
     "mta": {
         "label": "Marauding terrorist attack response",
@@ -450,7 +513,20 @@ PROFILES_EXTRA = {
         "synth": MTA_SYNTH,
         "review": True,
         "check_tool": "check_plan",
-    }
+    },
+    "trade": {
+        "label": "Purchasing agent team (Trusted Trade Agents)",
+        "lead": "head of purchasing for a hotel chain's kitchens",
+        "roles": TRADE_ROLES,
+        "plan_extra": "",
+        "fixed": [{"role": "sourcing", "task": "Find and quote the best option for the buyer's request."}],
+        "fallback": [{"role": "sourcing", "task": "Find and quote the best option for the buyer's request."}],
+        "then": {"role": "procurement", "task": "Check the recommended quote against the buyer's policy and place the order."},
+        "synth": TRADE_SYNTH,
+        "summary": "trade",
+        "review": False,
+    },
+    "pathway": pathway.PROFILE,
 }
 
 
@@ -513,6 +589,18 @@ async def review(state: State, config: RunnableConfig) -> dict:
     deferred = list(plan_.get("deferred") or []) if not state.get("deferred_sent") else []
     deferred += [by_id[r["task_id"]] for r in results if r.get("deferred") and r["task_id"] in by_id]
     results = [r for r in results if not r.get("deferred")]
+    if prof.get("then") and not state.get("then_sent") and results:
+        nxt = prof["then"]
+        reports = "\n\n".join(f"## {r['title']}\n{r['output'][:3000]}" for r in results)
+        hint = ""
+        if prof.get("summary") == "trade":
+            from . import trade
+            rec = trade.recommend(thread_id, reports)
+            hint = f"\nRecommended quote id: {rec}. Call get_policy, then place_order with quote_id {rec}." if rec else ""
+        t = {"id": uuid.uuid4().hex[:8], "role": nxt["role"], "title": ALL_ROLES[nxt["role"]]["title"], "next": True,
+             "task": f"{nxt['task']}{hint}\n\nReport from the previous step:\n{reports}", "previous": ""}
+        emit({"type": "revise", "next": True, "tasks": [{k: v for k, v in t.items() if k not in ("previous", "task")} | {"task": nxt["task"]}]})
+        return {"revisions": [t], "then_sent": True}
     if deferred and router.online and not state.get("deferred_sent"):
         # Planned on the device, cloud is back: run the specialists the device had to leave out.
         tasks = [{**t, "deferred": True, "previous": ""} for t in deferred]
@@ -622,6 +710,16 @@ async def synthesize(state: State, config: RunnableConfig) -> dict:
     ctx = {"agent": "lead", "task_id": "synth", "phase": "synthesize"}
     emit = _emitter(ctx)
     prof = PROFILES[state.get("profile") or "incident"]
+    if prof.get("summary") == "trade":
+        from . import trade
+        text = trade.summary(config["configurable"]["thread_id"])
+        if text:
+            ran = " · ".join(f"{r['title']} on {'this device' if (r['targets'] and r['targets'][-1] == EDGE) else router.label(r['targets'][-1]) if r['targets'] else 'this device'}" for r in results)
+            text += f"\n\n**Where it ran** — {ran}. Budget and approval rules stayed on this device."
+            tgt = EDGE
+            meta = {"target": tgt, "tier": "edge", "model": "Built from tool results", "workflow": workflow}
+            emit({"type": "final", "content": text, "meta": meta})
+            return {"messages": [{"role": "assistant", "content": text, "meta": meta}]}
     if len(results) == 1:
         r = results[0]
         meta = {"target": r["targets"][-1] if r["targets"] else EDGE, "single": True}
