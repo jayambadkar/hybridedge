@@ -27,13 +27,13 @@ async function pollLink() {
     const was = S.link && S.link.connected;
     S.link = s;
     $("#netInfo").innerHTML = s.connected
-      ? `Agents run on <b>${esc(s.model)}</b> in ${esc(s.label)}. Confidential steps (budgets, approvals) stay on this device.`
-      : `No link to the cloud. Agents run on <b>${DEVICE_MODEL}</b> on this laptop. Orders wait in the outbox and send themselves when the link returns.`;
+      ? `${esc(s.model)} · ${esc(s.label)} · ${s.latency_ms ?? "–"} ms`
+      : `${DEVICE_MODEL} · this device`;
     $("#drill").textContent = s.drill ? "Restore the link" : "Simulate losing the link";
     if (!s.connected && !S.offSince) S.offSince = Date.now();
     if (s.connected) { if (S.offSince) S.drops.push(S.offSince); S.offSince = null; S.lastSync = Date.now(); }
     renderSignal();
-    if (was !== undefined && was !== s.connected) { toast(s.connected ? "Link restored. Outbox syncing." : "Link lost. Agents continue on this device."); loadStore(); }
+    if (was !== undefined && was !== s.connected) { toast(s.connected ? "Connected" : "Offline"); loadStore(); }
     if (S.page === "inference") renderInference();
   } catch { $("#signal").className = "statusbar sb-down"; $("#sigState").textContent = "Server unreachable"; $("#sigSub").textContent = ""; }
   setTimeout(pollLink, 2000);
@@ -95,7 +95,7 @@ function onEvent(run, ev) {
   switch (ev.type) {
     case "hybridedge.plan":
       for (const t of ev.plan.tasks) lane(run, t.id, t.title);
-      for (const t of ev.plan.deferred || []) Object.assign(lane(run, t.id, t.title), { status: "waiting", where: null, events: [{ t: "Waits for the cloud: the device runs the core team" }] });
+      for (const t of ev.plan.deferred || []) Object.assign(lane(run, t.id, t.title), { status: "waiting", where: null, events: [{ t: "Deferred" }] });
       run.stage = "work"; break;
     case "hybridedge.step_start": {
       const step = { run: run.id, runTitle: run.title, agent: id === "plan" ? "Planner" : id === "synth" ? "Lead" : id === "review" ? "Reviewer" : run.lanes[id]?.title || id, target: ev.target, model: ev.model, reason: ev.reason, t: Date.now(), step_id: ev.step_id, tools: [] };
@@ -120,7 +120,7 @@ function onEvent(run, ev) {
       const r = ev.result || {}, l = run.lanes[id];
       if (l && l.events.length) {
         const e = l.events[l.events.length - 1];
-        e.r = r.status === "queued_offline" ? `Saved on this device (${r.outbox_id}), sends when the link returns`
+        e.r = r.status === "queued_offline" ? `Outbox ${r.outbox_id}`
           : r.status === "pending_approval" ? `Waiting for a human: ${(r.approval_reasons || []).join(", ")}`
           : r.status === "placed" ? `Order ${r.id} placed, ${eur(r.total_eur, 2)}`
           : r.total_eur != null ? `Quote ${r.id}: ${eur(r.total_eur, 2)}` : r.results ? `${r.results.length} products found` : r.items ? `${r.items.length} lines` : r.routes ? `${r.routes.filter((x) => x.status !== "closed").length} of ${r.routes.length} routes usable` : "";
@@ -129,16 +129,16 @@ function onEvent(run, ev) {
     }
     case "hybridedge.token": if (run.lanes[id] && id !== "synth") run.lanes[id].live = (run.lanes[id].live + ev.text).slice(-400); break;
     case "hybridedge.failover": {
-      const l = run.lanes[id]; if (l) { l.where = ev.to; l.events.push({ t: ev.to === "edge" ? "Link lost: continued on this device from the last checkpoint" : `${placeName(ev.from)} failed: moved to ${placeName(ev.to)}`, warn: true }); }
+      const l = run.lanes[id]; if (l) { l.where = ev.to; l.events.push({ t: ev.to === "edge" ? "Failover → this device" : `${placeName(ev.from)} failed: moved to ${placeName(ev.to)}`, warn: true }); }
       S.steps.unshift({ run: run.id, runTitle: run.title, agent: l?.title || id, event: "failover", target: ev.to, from: ev.from, reason: ev.to_reason || ev.reason, t: Date.now(), tools: [] });
       break;
     }
     case "hybridedge.upgrade": { const l = run.lanes[id]; if (l) { l.where = ev.to; l.events.push({ t: `Link back: moved up to ${placeName(ev.to)}` }); } break; }
-    case "hybridedge.deferred": if (run.lanes[id]) Object.assign(run.lanes[id], { status: "waiting", events: [...run.lanes[id].events, { t: "Deferred: runs on the cloud when the link returns", warn: true }] }); break;
+    case "hybridedge.deferred": if (run.lanes[id]) Object.assign(run.lanes[id], { status: "waiting", events: [...run.lanes[id].events, { t: "Deferred", warn: true }] }); break;
     case "hybridedge.revise":
       for (const t of ev.tasks) {
         const l = lane(run, t.id, `${t.title}${t.next ? "" : t.deferred ? "" : " · revision"}`);
-        l.status = "queued"; l.events.push({ t: t.next ? "Next step: acting on the sourcing report" : t.deferred ? "Cloud is back: running now" : "Sent back by the reviewer to fix an issue", warn: !t.next && !t.deferred });
+        l.status = "queued"; l.events.push({ t: t.next ? "Next step" : t.deferred ? "Resumed" : "Sent back by reviewer", warn: !t.next && !t.deferred });
       }
       run.stage = "work"; break;
     case "hybridedge.review": run.review = ev.review; if (run.lanes.review) run.lanes.review.status = "done"; break;
@@ -211,7 +211,7 @@ function renderHome() {
   const todos = [
     ...pend.map((o) => ({ ic: "!", t: `Approve order ${o.id} · ${eur(o.total_eur, 2)}`, s: (o.approval_reasons || []).join(", "), btn: `<button class="btn sm" data-approve="${o.id}">Review</button>` })),
     ...(low.length ? [{ ic: "↓", t: `${low.length} products running low`, s: low.slice(0, 3).map((i) => `${i.name.split(" ").slice(0, 3).join(" ")} (${i.days_of_cover} days)`).join(" · "), btn: `<button class="btn sm" data-preset="0">Plan restock</button>` }] : []),
-    ...out.map((o) => ({ ic: "⇡", t: `Order ${o.id} saved on this device`, s: "Sends automatically when the link returns", btn: "" })),
+    ...out.map((o) => ({ ic: "⇡", t: `Order ${o.id} in outbox`, s: "", btn: "" })),
     ...closed.map((r) => ({ ic: "⨯", t: `${r.name}: ${r.status}`, s: r.note, btn: `<button class="btn sm" data-go="routes">View</button>` })),
   ];
   $("#page").innerHTML = `
@@ -226,7 +226,7 @@ function renderHome() {
       <div class="card"><div class="card-h"><h2>Revenue</h2><span class="muted">Last 28 days</span></div>${chart(s.sales)}</div>
       <div class="card"><div class="card-h"><h2>Things to do</h2></div>${todos.length ? todos.map((x) => `<div class="todo"><div class="ic">${x.ic}</div><div><div class="t">${esc(x.t)}</div><div class="s">${esc(x.s)}</div></div>${x.btn}</div>`).join("") : `<div class="empty">Nothing needs you.</div>`}</div>
     </div>
-    <div class="card"><div class="card-h"><h2>Ask the agents</h2><span class="muted">${esc(t.demand_note)}</span></div>
+    <div class="card"><div class="card-h"><h2>Ask the agents</h2></div>
       <div class="presets">${PRESETS.map((p, i) => `<button class="preset" data-preset="${i}">${esc(p[1])}</button>`).join("")}</div></div>`;
   bindChart(s.sales);
 }
@@ -242,14 +242,14 @@ function renderOrders() {
     ${rows.length ? rows.map((o) => `<tr><td><b>${esc(o.id)}</b>${o.offline ? ` <span class="badge device">Outbox</span>` : ""}</td><td class="muted">${new Date(o.created * 1000).toLocaleString("en-GB", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</td>
       <td>${esc((o.by || "").replace("agent:", "Agent · ").replace("human:", ""))}</td><td>${badge(o.status)}${o.reasons && o.reasons.length && o.status === "pending_approval" ? `<div class="muted" style="font-size:12px;margin-top:3px">${esc(o.reasons.join(", "))}</div>` : ""}</td>
       <td style="max-width:320px">${esc(o.lines)}</td><td class="r num">${esc(o.total)}</td>
-      <td class="r">${o.status === "pending_approval" ? `<button class="btn sm" data-decide="${o.id}" data-ok="1">Approve</button> <button class="btn sm" data-decide="${o.id}" data-ok="">Reject</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="7" class="empty">No orders yet. Ask an agent to restock.</td></tr>`}
+      <td class="r">${o.status === "pending_approval" ? `<button class="btn sm" data-decide="${o.id}" data-ok="1">Approve</button> <button class="btn sm" data-decide="${o.id}" data-ok="">Reject</button>` : ""}</td></tr>`).join("") : `<tr><td colspan="7" class="empty">No orders yet</td></tr>`}
     </tbody></table></div>
-    <div class="card"><div class="card-h"><h2>Buying policy</h2><span class="muted">Enforced by the wholesaler, not by the agent</span></div>
+    <div class="card"><div class="card-h"><h2>Buying policy</h2></div>
       <div class="grid g3"><div><div class="muted">Agent may spend per day</div><b class="num">${eur(s.policy.auto_approve_limit_eur)}</b> <span class="muted">(${eur(s.policy.spent_today_eur, 2)} used today)</span></div>
       <div><div class="muted">Needs a human for</div>${esc(s.policy.human_approval_for.join(", "))}</div><div><div class="muted">Approvers</div>${esc(s.policy.approvers.join(", "))}</div></div></div>`;
 }
 async function renderProducts() {
-  $("#page").innerHTML = `<div class="head"><h1>Products</h1><span class="muted">Wholesaler catalogue · prices excl. VAT</span></div><div class="card flush" id="plist"><div class="empty">Loading…</div></div>`;
+  $("#page").innerHTML = `<div class="head"><h1>Products</h1></div><div class="card flush" id="plist"><div class="empty">Loading…</div></div>`;
   const r = await (await fetch(`${TRADE}/catalog/search?q=${encodeURIComponent(S.q)}`, { headers: { "x-agent-key": S.store.agent_key } })).json();
   const items = r.results || r;
   $("#plist").innerHTML = `<table><thead><tr><th>Product</th><th>SKU</th><th>Category</th><th>Labels</th><th class="r">Price</th><th class="r">Per litre</th><th>Earliest delivery</th></tr></thead><tbody>
@@ -262,11 +262,11 @@ function renderInventory() {
     ${st.items.map((i) => `<tr><td><b>${esc(i.name)}</b>${i.cold_chain ? ` <span class="badge warn">Cold chain</span>` : ""}</td><td class="r num">${i.on_hand} ${esc(i.unit)}</td><td class="r num">${i.sold_per_day}</td>
       <td><div class="cover"><i class="${i.status === "out soon" ? "lo" : i.status === "reorder" ? "mid" : ""}" style="width:${Math.max(2, (i.days_of_cover / maxc) * 100)}%"></i><span class="num">${i.days_of_cover} d</span></div></td>
       <td>${i.status === "ok" ? `<span class="badge ok">OK</span>` : i.status === "reorder" ? `<span class="badge warn">Reorder</span>` : `<span class="badge bad">Out soon</span>`}</td><td class="r num">${i.suggested_units ? `${i.suggested_units} ${esc(i.unit)}` : ""}</td></tr>`).join("")}
-    </tbody></table></div><p class="muted">${esc(st.rule)}</p>`;
+    </tbody></table></div>`;
 }
 function renderRoutes() {
   const r = S.store.routes;
-  $("#page").innerHTML = `<div class="head"><h1>Supply routes</h1><span class="muted">Updated by the depot team over the radio net and the satellite link</span><div class="r"><button class="btn dark" data-preset="2">Assess route risk with agents</button></div></div>
+  $("#page").innerHTML = `<div class="head"><h1>Supply routes</h1><div class="r"><button class="btn dark" data-preset="2">Assess route risk with agents</button></div></div>
     <div class="grid g3">${r.routes.map((x) => `<div class="card"><div class="card-h"><h2>${esc(x.name)}</h2></div>
       <div style="display:flex;gap:6px;margin-bottom:10px">${x.status === "open" ? `<span class="badge ok">Open</span>` : x.status === "closed" ? `<span class="badge bad">Closed</span>` : `<span class="badge warn">Disrupted</span>`}<span class="badge">${x.transit_days} days</span><span class="badge ${x.risk === "low" ? "" : x.risk === "high" ? "bad" : "warn"}">${esc(x.risk)} risk</span>${r.recommended === x.id ? `<span class="badge cloud">Recommended</span>` : ""}</div>
       <div>${esc(x.note)}</div><div class="muted" style="margin-top:8px;font-size:12px">Updated ${esc(x.updated)}</div></div>`).join("")}</div>
@@ -277,8 +277,8 @@ function renderAgents() {
   const runs = S.runs;
   const stage = (run) => { const order = ["plan", "work", "review", "synth", "done"], names = ["Plan", "Specialists", "Review", "Write-up", "Done"], at = order.indexOf(run.stage); return `<div class="stages">${names.map((n, i) => `${i ? "<em>→</em>" : ""}<span class="${i < at ? "done" : i === at ? (run.done ? "done" : "on") : ""}">${n}</span>`).join("")}</div>`; };
   const where = (t) => (t ? `<span class="badge ${tierOf(t)}">${esc(placeName(t))}</span>` : "");
-  $("#page").innerHTML = `<div class="head"><h1>Agent tasks</h1><span class="muted">Planning agents analyse and plan. Purchasing agents quote and order through the wholesaler's interface.</span></div>
-    <div class="card"><form class="compose" id="compose"><textarea id="task" placeholder="Ask for a plan, an analysis or an order, e.g. “Plan this week's restock around the closed highway”"></textarea>
+  $("#page").innerHTML = `<div class="head"><h1>Agent tasks</h1></div>
+    <div class="card"><form class="compose" id="compose"><textarea id="task" placeholder="Ask for a plan, an analysis or an order"></textarea>
       <button class="btn dark" data-kind="plan">Plan</button><button class="btn" data-kind="order">Order</button></form>
       <div class="presets">${PRESETS.map((p, i) => `<button class="preset" data-preset="${i}">${p[0] === "order" ? "Order · " : ""}${esc(p[1])}</button>`).join("")}</div></div>
     <div class="runs">${runs.length ? runs.map((run) => `<div class="card">
@@ -288,7 +288,7 @@ function renderAgents() {
         ${l.events.map((e) => `<div class="ev"><span>${e.warn ? "⚠" : "›"}</span><div>${esc(e.t)}${e.r ? `<div style="color:#303030">${esc(e.r)}</div>` : ""}</div></div>`).join("")}
         ${l.status === "running" && l.live ? `<div class="live">${esc(l.live)}</div>` : ""}</div>`; }).join("")}</div>
       ${run.review ? `<div class="review"><b>Reviewer:</b> ${esc(run.review.verdict || "")}${(run.review.issues || []).length ? `<ul>${run.review.issues.map((i) => `<li><span class="badge ${i.severity === "high" ? "bad" : "warn"}">${esc(i.severity)}</span> ${esc(i.issue)}</li>`).join("")}</ul>` : ""}</div>` : ""}
-      ${run.out ? `<div class="out md">${md(run.out, run)}</div>` : ""}</div>`).join("") : `<div class="card empty">No agent tasks yet. Pick one above.</div>`}</div>`;
+      ${run.out ? `<div class="out md">${md(run.out, run)}</div>` : ""}</div>`).join("") : `<div class="card empty">No tasks yet</div>`}</div>`;
   $("#compose").onsubmit = (e) => { e.preventDefault(); const v = $("#task").value.trim(); if (v) startRun(e.submitter?.dataset.kind || "plan", v); };
 }
 
@@ -297,17 +297,17 @@ function renderInference() {
   const avg = (arr) => (arr.length ? Math.round(arr.reduce((a, b) => a + b, 0) / arr.length) : null);
   const ms = (t) => avg(steps.filter((x) => (t === "edge" ? x.target === "edge" : x.target !== "edge") && x.ttft).map((x) => x.ttft));
   const live = s.connected ? s.running_on : "edge";
-  $("#page").innerHTML = `<div class="head"><h1>Inference</h1><span class="muted">Where each agent step ran, and why</span></div>
+  $("#page").innerHTML = `<div class="head"><h1>Inference</h1></div>
     <div class="card"><div class="where">
-      <div class="tier ${live === "verda" ? "live" : ""}"><div class="h"><i style="background:var(--cloud)"></i>Verda · H100</div><div class="m">Nemotron 3.5 Lightning 30B-A3B · vLLM · primary cloud</div><div class="n">${s.connected && s.running_on === "verda" ? `${s.latency_ms} ms` : "–"}</div><div class="muted">Planning, analysis, review and write-up when the link is up</div></div>
-      <div class="tier ${live === "modal" ? "live" : ""}"><div class="h"><i style="background:#6366f1"></i>Modal · H100</div><div class="m">Nemotron 3.5 Lightning 30B-A3B · vLLM · standby</div><div class="n">${s.connected && s.running_on === "modal" ? `${s.latency_ms} ms` : "Standby"}</div><div class="muted">Takes over the moment Verda fails or is overloaded</div></div>
-      <div class="tier ${live === "edge" ? "live" : ""}"><div class="h"><i style="background:var(--device)"></i>This device · M3</div><div class="m">${DEVICE_MODEL} · Ollama · always available</div><div class="n">${s.connected ? "Ready" : "Running"}</div><div class="muted">Budgets and approvals always; everything else when the link drops</div></div></div>
+      <div class="tier ${live === "verda" ? "live" : ""}"><div class="h"><i style="background:var(--cloud)"></i>Verda · H100</div><div class="m">Nemotron 3.5 Lightning 30B-A3B · primary</div><div class="n">${s.connected && s.running_on === "verda" ? `${s.latency_ms} ms` : "–"}</div></div>
+      <div class="tier ${live === "modal" ? "live" : ""}"><div class="h"><i style="background:#6366f1"></i>Modal · H100</div><div class="m">Nemotron 3.5 Lightning 30B-A3B · standby</div><div class="n">${s.connected && s.running_on === "modal" ? `${s.latency_ms} ms` : "Standby"}</div></div>
+      <div class="tier ${live === "edge" ? "live" : ""}"><div class="h"><i style="background:var(--device)"></i>This device · M3</div><div class="m">${DEVICE_MODEL}</div><div class="n">${s.connected ? "Ready" : "Running"}</div></div></div>
       <div class="split">${steps.length ? `<i style="width:${(cloud / steps.length) * 100}%;background:var(--cloud)"></i><i style="width:${(dev / steps.length) * 100}%;background:var(--device)"></i>` : ""}</div>
       <div class="muted">${steps.length} model steps this session · ${cloud} in the cloud · ${dev} on this device · ${fails} failover${fails === 1 ? "" : "s"} · first token ${ms("cloud") ?? "–"} ms cloud / ${ms("edge") ?? "–"} ms device</div></div>
     <div class="card flush"><table><thead><tr><th>Time</th><th>Task</th><th>Agent</th><th>Ran on</th><th>Model</th><th class="r">First token</th><th class="r">Step</th><th>Tools</th><th>Why there</th></tr></thead><tbody>
-      ${S.steps.length ? S.steps.slice(0, 80).map((x) => x.event ? `<tr style="background:#fff8ef"><td class="muted num">${new Date(x.t).toLocaleTimeString("en-GB")}</td><td>${esc(x.runTitle)}</td><td>${esc(x.agent)}</td><td colspan="5"><b>Failover</b> ${esc(placeName(x.from))} → ${esc(placeName(x.target))}, resumed from the last checkpoint</td><td class="why">${esc(x.reason || "")}</td></tr>`
+      ${S.steps.length ? S.steps.slice(0, 80).map((x) => x.event ? `<tr style="background:#fff8ef"><td class="muted num">${new Date(x.t).toLocaleTimeString("en-GB")}</td><td>${esc(x.runTitle)}</td><td>${esc(x.agent)}</td><td colspan="5"><b>Failover</b> ${esc(placeName(x.from))} → ${esc(placeName(x.target))}</td><td class="why">${esc(x.reason || "")}</td></tr>`
         : `<tr><td class="muted num">${new Date(x.t).toLocaleTimeString("en-GB")}</td><td>${esc(x.runTitle)}</td><td>${esc(x.agent)}</td><td><span class="badge ${tierOf(x.target)}">${esc(placeName(x.target))}</span></td><td class="muted">${esc(x.model || "")}</td><td class="r num">${x.ttft != null ? `${x.ttft} ms` : "–"}</td><td class="r num">${x.ms != null ? `${(x.ms / 1000).toFixed(1)} s` : "…"}</td><td>${x.tools.map((t) => `<code style="font-size:11px">${esc(t)}</code>`).join(" ")}</td><td class="why">${esc(x.reason || "")}</td></tr>`).join("")
-        : `<tr><td colspan="9" class="empty">Run an agent task to see each step here.</td></tr>`}</tbody></table></div>`;
+        : `<tr><td colspan="9" class="empty">No steps yet</td></tr>`}</tbody></table></div>`;
 }
 
 // ---------------------------------------------------------------- events
@@ -321,7 +321,7 @@ document.addEventListener("click", async (e) => {
   else if (t.dataset.order) { t.disabled = true; t.textContent = "Sent"; startRun("order", t.dataset.order); }
   else if (t.dataset.decide) {
     await fetch(`${TRADE}/approvals/${t.dataset.decide}`, { method: "POST", headers: { ...json, "x-approver-key": APPROVER }, body: JSON.stringify({ approve: !!t.dataset.ok, by: "Depot manager" }) });
-    toast(t.dataset.ok ? "Approved. The wholesaler will deliver." : "Rejected."); loadStore();
+    toast(t.dataset.ok ? "Approved" : "Rejected"); loadStore();
   }
 });
 $("#signal").addEventListener("click", (e) => { if (!e.target.closest(".pop")) $("#netPop").hidden = !$("#netPop").hidden; });

@@ -130,7 +130,6 @@ TRADE_ROLES: dict[str, dict[str, Any]] = {
     },
     "procurement": {
         "title": "Procurement",
-        "private": True,
         "brief": "Holds the buyer's authority. Call get_policy, check the recommended quote against it, then call place_order with that quote id and a one-sentence reason. The wholesaler decides whether a human must approve: report exactly what it returned. If it returns queued_offline, the order is saved on this device and goes out automatically when the signal returns.",
         "tools": ["get_policy", "place_order"],
         "report": "### Decision\nOrder id, status, total EUR, delivery date.\n### Policy check\nBullets: limit, spent today, categories, deadline.\n### For the approver\nOne line: what they need to decide, or 'Nothing: order placed'.",

@@ -41,7 +41,7 @@ It has Home, Orders, Products, Inventory, Supply routes, **Agent tasks** and **I
 | Agent | Runs on | Why |
 |---|---|---|
 | Sourcing | Nemotron 3.5 Lightning 30B in the cloud (Verda, Modal as standby) | Searches, compares price per litre, stock and delivery, and requests a quote. |
-| Procurement | Nemotron 3.5 Bolt E4B on the laptop, always | Holds the budget and approval rules, so they never leave the device. Places the order. |
+| Procurement | Same routing: cloud first, this laptop when the link drops | Checks the quote against the buying policy and places the order. |
 
 ## Low connectivity
 
