@@ -6,7 +6,7 @@ import re
 import time
 from typing import Any
 
-from . import pathway, store, trade
+from . import pathway, store, trade, trade_ops
 
 # Demo reference cards. Generic summaries only -- local SOPs and medical direction always take precedence.
 PROTOCOLS: dict[str, dict[str, Any]] = {
@@ -378,7 +378,7 @@ TOOL_SPECS: list[dict] = [
 
 from . import mta_tools  # noqa: E402
 
-TOOL_SPECS += mta_tools.TOOL_SPECS + trade.TOOL_SPECS + pathway.TOOL_SPECS
+TOOL_SPECS += mta_tools.TOOL_SPECS + trade.TOOL_SPECS + pathway.TOOL_SPECS + trade_ops.TOOL_SPECS
 
 
 async def run_tool(name: str, args_json: str, thread_id: str, tier: str) -> tuple[str, Any]:
@@ -403,6 +403,8 @@ async def run_tool(name: str, args_json: str, thread_id: str, tier: str) -> tupl
         elif name == "plan_formation":
             keys = {"officers", "intel_level", "incident_type", "structure"}
             result = plan_formation(**{k: v for k, v in args.items() if k in keys and v is not None})
+        elif name in trade_ops.NAMES:
+            result = trade_ops.run(name, args, await store.get_context(thread_id))
         elif name in pathway.NAMES:
             result = pathway.run(name, args, await store.get_context(thread_id))
         elif name in trade.NAMES:

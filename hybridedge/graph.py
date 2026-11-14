@@ -28,7 +28,7 @@ from langgraph.types import Send
 
 from .config import settings
 from .router import EDGE, Deferred, router, run_with_failover
-from . import pathway
+from . import pathway, trade_ops
 from .tools import TOOL_SPECS, run_tool
 
 # --------------------------------------------------------------------- roster
@@ -137,6 +137,7 @@ TRADE_ROLES: dict[str, dict[str, Any]] = {
     },
 }
 
+TRADE_ROLES.update(trade_ops.ROLES)
 ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES, **MTA_ROLES, **TRADE_ROLES, **pathway.ROLES}
 
 COMMON = """Current local time: {now}. You support first responders (police, fire, EMS).
@@ -527,6 +528,7 @@ PROFILES_EXTRA = {
         "review": False,
     },
     "pathway": pathway.PROFILE,
+    "trade_ops": trade_ops.PROFILE,
 }
 
 
@@ -640,7 +642,7 @@ async def review(state: State, config: RunnableConfig) -> dict:
 
     async def call(target: str, step_id: str) -> dict:
         msgs = [
-            {"role": "system", "content": REVIEW_PROMPT.replace("{roles}", roles)},
+            {"role": "system", "content": prof.get("review_prompt", REVIEW_PROMPT).replace("{roles}", roles)},
             {"role": "user", "content": f"Automatic checks:\n{auto}\n\nReports:\n{reports}"},
         ]
         # Reviewing is a checklist job: no long reasoning, keeps the loop fast.

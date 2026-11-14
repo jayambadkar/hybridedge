@@ -5,6 +5,16 @@ AI purchasing agents buy from it, safely, including where the connection is poor
 
 Open http://localhost:8787/trade/ after `./start.sh`. All products, prices and buyers are mock data.
 
+The console is a buyer's admin for a distributor where conflict has cut the fixed network
+(Eastgate Provisions: three depots, a shared satellite link, roads that close at short notice).
+It has Home, Orders, Products, Inventory, Supply routes, **Agent tasks** and **Inference** pages.
+
+- **Planning agents** (Demand and stock, Supply routes, Pricing and margin) analyse the store,
+  a reviewer sends weak work back for revision, and the lead writes the week's operating plan.
+  Each "ORDER:" line in the plan hands off to the purchasing agents with one click.
+- **Inference** shows every model step: where it ran (Verda, Modal or this device), first-token
+  latency, tools called, failovers, and why the router chose that place.
+
 ## Two sides
 
 **The wholesaler's interface** (`/trade/v1`, OpenAPI at `/docs`, agent card at
@@ -40,6 +50,10 @@ Quotes are provisional, and the order is saved in an outbox on the device. When 
 the outbox sends the order, and the wholesaler prices it, applies the policy and logs it as usual.
 
 ## Demo
+
+0. **Eastgate.** On Home, click **Plan this week with agents**. Watch the specialists, the review
+   loop and the plan on **Agent tasks**, then send one of its orders. Open **Inference** to show
+   where each step ran. Then simulate losing the link and run it again: it plans on the laptop.
 
 1. **Helsinki.** Ask for 1,000 L of lactose-free milk by Monday. The agents quote €1,145, which is
    over the buyer's €1,000 limit, so the order waits for a human. Click **Approve**.

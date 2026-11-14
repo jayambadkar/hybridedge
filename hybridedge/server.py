@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
-from . import pathway, store, trade
+from . import pathway, store, trade, trade_ops
 from .agents_api import api as agents_api
 from .config import ROOT, settings
 from .flow import capability, flow_from_meta
@@ -65,6 +65,7 @@ app.add_middleware(
 app.include_router(agents_api)
 app.include_router(trade.api)
 app.include_router(pathway.api)
+app.include_router(trade_ops.api)
 
 
 @app.get("/api/trade/outbox")
