@@ -230,7 +230,16 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         msg["meta"]["budget"] = budget
         return msg
 
-    msg = await run_with_failover(call, emit, {"agent": "lead", "task_id": "plan", "phase": "plan"})
+    if not router.online and prof.get("fallback"):
+        # Constrained mode: use the profile's fixed core team instead of asking the small model to plan.
+        step_id = uuid.uuid4().hex
+        emit({"type": "step_start", "step_id": step_id, "target": EDGE, "tier": "edge", "model": router.label(EDGE),
+              "reason": router.pick_reason()[1], "agent": "lead", "task_id": "plan", "phase": "plan"})
+        msg = {"role": "assistant", "content": json.dumps({"agents": prof["fallback"]}),
+               "meta": {"target": EDGE, "tier": "edge", "model": router.label(EDGE), "budget": settings.edge_max_agents, "step_id": step_id}}
+        emit({"type": "step_end", "step_id": step_id, "meta": msg["meta"], "has_tool_calls": False, "agent": "lead", "task_id": "plan", "phase": "plan"})
+    else:
+        msg = await run_with_failover(call, emit, {"agent": "lead", "task_id": "plan", "phase": "plan"})
     budget = msg["meta"]["budget"]
     tasks = []
     try:
@@ -301,7 +310,9 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
         history = state.get("context", []) + [{"role": "user", "content": f"Your assigned sub-task: {task['task']}"}]
         history += [_clean(m) for m in state.get("messages", [])]
         msgs = [{"role": "system", "content": system}] + _fit(history, target)
-        return await router.stream_step(target, msgs, _spec_tools(task["role"]) if allow_tools else None, emit, step_id)
+        # Revisions fix specific reviewer issues: skip long reasoning to keep the loop quick.
+        return await router.stream_step(target, msgs, _spec_tools(task["role"]) if allow_tools else None, emit, step_id,
+                                        thinking=False if task.get("revision") else None)
 
     msg = await run_with_failover(call, emit, ctx)
     for tc in msg.get("tool_calls", []):
@@ -475,7 +486,8 @@ async def review(state: State, config: RunnableConfig) -> dict:
             {"role": "system", "content": REVIEW_PROMPT.replace("{roles}", roles)},
             {"role": "user", "content": f"Automatic checks:\n{auto}\n\nReports:\n{reports}"},
         ]
-        return await router.stream_step(target, msgs, None, emit, step_id, json_mode=True, max_tokens=900, silent=True)
+        # Reviewing is a checklist job: no long reasoning, keeps the loop fast.
+        return await router.stream_step(target, msgs, None, emit, step_id, json_mode=True, max_tokens=900, silent=True, thinking=False)
 
     msg = await run_with_failover(call, emit, {"agent": "review", "task_id": "review", "phase": "review"})
     found: list[dict] = []
@@ -556,7 +568,8 @@ async def synthesize(state: State, config: RunnableConfig) -> dict:
         content = f"Responder request: {user_req}\n\nSpecialist reports:\n{reports}"
         if target == EDGE and len(content) > settings.edge_context_chars:
             content = content[: settings.edge_context_chars] + "\n...(truncated)"
-        return await router.stream_step(target, [{"role": "system", "content": system}, {"role": "user", "content": content}], None, emit, step_id)
+        # The brief merges finished reports: start writing straight away instead of reasoning first.
+        return await router.stream_step(target, [{"role": "system", "content": system}, {"role": "user", "content": content}], None, emit, step_id, thinking=False)
 
     msg = await run_with_failover(call, emit, ctx)
     msg["meta"]["workflow"] = workflow

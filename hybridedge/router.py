@@ -226,7 +226,17 @@ class Router:
 
     # ----------------------------------------------------------------- monitor
     def start(self) -> None:
-        self._tasks = [asyncio.create_task(self._loop()), asyncio.create_task(self._net_loop())]
+        self._tasks = [asyncio.create_task(self._loop()), asyncio.create_task(self._net_loop()), asyncio.create_task(self._warm_loop())]
+
+    async def _warm_loop(self) -> None:
+        """Keep the on-device model loaded so a failover answers immediately (no ~10 s cold load)."""
+        base = settings.edge_base_url.rsplit("/v1", 1)[0]
+        while True:
+            try:
+                await self._http.post(f"{base}/api/generate", json={"model": settings.edge_model, "prompt": "", "keep_alive": -1}, timeout=60)
+            except Exception:
+                pass
+            await asyncio.sleep(600)
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -328,13 +338,14 @@ class Router:
         json_mode: bool = False,
         max_tokens: int | None = None,
         silent: bool = False,
+        thinking: bool | None = None,
     ) -> dict:
         """Stream one assistant turn from ``target``. Returns an OpenAI-format assistant message."""
         if target == EDGE:
             async with self.edge_sem:  # the laptop serves one generation at a time: scale down
                 self.edge_inflight += 1
                 try:
-                    return await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
+                    return await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent, thinking)
                 finally:
                     self.edge_inflight -= 1
         s = self.by_name[target]
@@ -342,13 +353,14 @@ class Router:
         if self.saturated(s):
             asyncio.ensure_future(self.check())  # saturation may need to wake a standby
         try:
-            msg = await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent)
+            msg = await self._stream(target, messages, tools, emit, step_id, json_mode, max_tokens, silent, thinking)
             s.served += 1
             return msg
         finally:
             s.inflight -= 1
 
-    async def _stream(self, target, messages, tools, emit, step_id, json_mode, max_tokens, silent) -> dict:
+    async def _stream(self, target, messages, tools, emit, step_id, json_mode, max_tokens, silent, thinking=None) -> dict:
+        think = settings.cloud_thinking if thinking is None else thinking
         req: dict[str, Any] = {"messages": messages, "stream": True, "temperature": 0.3}
         if target == EDGE:
             client, cut = self.edge, None
@@ -359,8 +371,8 @@ class Router:
                 raise LinkLost(s.last_error or "unavailable")
             client, cut = s.client, s.cut
             # With reasoning on, leave room for the thinking before the visible answer.
-            req.update(model=s.p.model, max_tokens=(max_tokens or 2048) + (3072 if settings.cloud_thinking else 0))
-            req["extra_body"] = {"chat_template_kwargs": {"enable_thinking": settings.cloud_thinking}}
+            req.update(model=s.p.model, max_tokens=(max_tokens or 2048) + (3072 if think else 0))
+            req["extra_body"] = {"chat_template_kwargs": {"enable_thinking": think}}
         if tools:
             req["tools"] = tools
             req["tool_choice"] = "auto"
