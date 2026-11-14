@@ -73,8 +73,8 @@ button { cursor: pointer; }
 .where.cloud { background: var(--blue-bg); color: var(--blue); }
 .where.device { background: var(--amber-bg); color: var(--amber); }
 .agents { list-style: none; margin: 0; padding: 0; }
-.agents li { display: grid; grid-template-columns: 12px 1fr; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); }
-.agents li:first-child { border-top: 0; }
+.agents > li { display: grid; grid-template-columns: 12px 1fr; gap: 10px; padding: 7px 0; border-top: 1px solid var(--line); }
+.agents > li:first-child { border-top: 0; }
 .dot { width: 9px; height: 9px; border-radius: 50%; margin-top: 6px; background: #cbd5e1; }
 .dot.running { background: var(--blue); animation: blink 1s infinite; }
 .dot.done { background: #16a34a; }
@@ -138,3 +138,45 @@ button { cursor: pointer; }
   .top { gap: 10px; padding: 10px 12px; }
   .threat-grid { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* detail */
+.md table { width: 100%; border-collapse: collapse; margin: 4px 0 10px; font-size: 12.5px; }
+.md th { text-align: left; font-weight: 600; color: var(--muted); border-bottom: 1px solid var(--line); padding: 4px 6px 4px 0; }
+.md td { border-bottom: 1px solid var(--line); padding: 4px 6px 4px 0; vertical-align: top; }
+.md h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-2); margin: 10px 0 4px; }
+.md blockquote { margin: 4px 0 8px; padding: 6px 10px; border-left: 3px solid #cbd5e1; background: #f8fafc; }
+.agents > li.open { background: #f8fafc; }
+.ag-row { cursor: pointer; }
+.ag-more { font-size: 12px; color: var(--blue); font-weight: 600; margin-left: auto; }
+.ag-report { margin-top: 8px; padding: 10px 12px; background: #fff; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.ag-n .rev { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; background: #ede9fe; color: #6d28d9; }
+.review { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; }
+.review h4 { margin: 0 0 4px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
+.review p { margin: 0 0 8px; font-size: 13px; color: var(--ink-2); }
+.issues { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.issues li { font-size: 12.5px; padding: 6px 8px; border-radius: 6px; background: #f8fafc; border-left: 3px solid #cbd5e1; }
+.issues li.high { border-left-color: var(--red); background: #fef2f2; }
+.issues li.medium { border-left-color: #d97706; background: #fffbeb; }
+.issues .own { font-weight: 600; }
+.issues .st { float: right; font-size: 11px; font-weight: 600; color: #6d28d9; }
+.sev { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; margin-right: 6px; }
+.high .sev { color: var(--red); } .medium .sev { color: #b45309; } .low .sev { color: var(--muted); }
+.after { font-size: 12.5px; margin-top: 8px; color: var(--ink-2); }
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tbl th { text-align: left; font-size: 11.5px; color: var(--muted); font-weight: 600; padding: 0 6px 4px 0; }
+.tbl td { padding: 5px 6px 5px 0; border-top: 1px solid var(--line); }
+.tbl td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.triage { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 10px; }
+.triage div { border-radius: 8px; padding: 6px 8px; font-size: 12px; font-weight: 600; }
+.triage b { display: block; font-size: 18px; }
+.t1 { background: #fee2e2; color: #991b1b; } .t2 { background: #fef3c7; color: #92400e; } .t3 { background: #dcfce7; color: #166534; }
+.short { margin: 0 0 10px; font-size: 13px; padding: 6px 8px; border-radius: 6px; background: var(--red-bg); color: #7f1d1d; font-weight: 600; }
+.alert-txt { font-size: 13px; padding: 8px 10px; border-radius: 8px; background: #fff7ed; border: 1px solid #fed7aa; margin-bottom: 8px; }
+.alert-txt .lang { display: block; font-size: 11px; font-weight: 700; color: #9a3412; margin-bottom: 2px; }
+.mk-hosp { width: 22px; height: 22px; border-radius: 5px; background: #fff; color: #dc2626; border: 2px solid #dc2626; font-weight: 800; }
+.mk-stn { padding: 2px 6px; border-radius: 5px; background: #dc2626; font-size: 10.5px; }
+.mk-stn.out { background: #d97706; }
+.doc { font-size: 13.5px; }
+.doc h2 { font-size: 15px; margin: 18px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.doc h2:first-child { margin-top: 0; }
+.modal-card.wide { width: min(920px, 100%); }

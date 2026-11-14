@@ -100,6 +100,9 @@ class FlowBuilder:
             elif prev is None and tgt != self.routing[-1]["to"]:
                 self._route(ev, "switch", self.routing[-1]["to"], tgt, ev.get("reason"))
             self._agent_target[who] = tgt
+            if tid == "review" and "review" not in self.lanes:
+                self.lanes["review"] = {"id": "review", "role": "review", "title": "Reviewer", "task": "Check the plan for conflicts and gaps", "status": "running", "steps": []}
+                self.order.append("review")
             if tid == "plan":
                 self.planning_target = ev.get("target")
             elif tid == "synth":
@@ -118,6 +121,9 @@ class FlowBuilder:
                 self.order.append(task["id"])
             self.stage_status.update(planning="done", reasoning="active", checkpointing="active")
             return True
+        if t == "tool_call" and tid == "review" and "review" not in self.lanes:
+            self.lanes["review"] = {"id": "review", "role": "review", "title": "Reviewer", "task": "Check the plan for conflicts and gaps", "status": "running", "steps": []}
+            self.order.append("review")
         if t == "tool_call" and tid in self.lanes:
             steps = self.lanes[tid]["steps"]
             target = steps[-1]["target"] if steps else None
@@ -145,6 +151,17 @@ class FlowBuilder:
                     if st["kind"] == "reason" and st["status"] == "running":
                         st["status"] = "failed_over"
                         break
+            return True
+        if t == "revise":
+            for task in ev.get("tasks", []):
+                label = "added by review" if task.get("added") else "revision"
+                self.lanes[task["id"]] = {"id": task["id"], "role": task["role"], "title": f"{task['title']} · {label}", "task": task["task"], "status": "queued", "steps": [], "revision": True}
+                self.order.append(task["id"])
+            return True
+        if t == "review":
+            if "review" in self.lanes:
+                self.lanes["review"]["status"] = "done"
+                self.lanes["review"]["issues"] = len((ev.get("review") or {}).get("issues", []))
             return True
         if t == "upgrade":
             self._route(ev, "upgrade", ev.get("from"), ev.get("to"), ev.get("reason"))
@@ -232,7 +249,8 @@ def flow_from_meta(meta: dict) -> dict | None:
     if not wf:
         return None
     plan = wf.get("plan") or {}
-    results = {r["task_id"]: r for r in wf.get("results", [])}
+    every = wf.get("all_results") or wf.get("results", [])
+    results = {r["task_id"]: r for r in every}
     lanes = []
     for task in plan.get("tasks", []):
         r = results.get(task["id"], {})
@@ -242,6 +260,11 @@ def flow_from_meta(meta: dict) -> dict | None:
             if tools and len(steps) < 2 * len(r.get("targets", [])) - 1:
                 steps.append({"kind": "tool", "label": tools.pop(0), "target": target, "tier": "device", "status": "done"})
         lanes.append({"id": task["id"], "role": task["role"], "title": task["title"], "task": task["task"], "status": "done", "steps": steps})
+    plan_ids = {t["id"] for t in plan.get("tasks", [])}
+    for r in every:
+        if r["task_id"] not in plan_ids:  # reviewer-requested revisions
+            steps = [{"kind": "reason", "label": "Reason", "target": t, "tier": _tier(t), "status": "done"} for t in r.get("targets", [])]
+            lanes.append({"id": r["task_id"], "role": r["role"], "title": f"{r['title']} · revision", "task": r["task"], "status": "done", "steps": steps, "revision": True})
     planned = plan.get("planned_on")
     result_target = meta.get("target")
     return _shape(

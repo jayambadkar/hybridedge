@@ -67,7 +67,7 @@ class Settings:
     edge_concurrency: int = int(os.getenv("EDGE_CONCURRENCY", "1"))
 
     # Multi-agent scaling: how many specialists a plan may fan out to on each tier.
-    cloud_max_agents: int = int(os.getenv("CLOUD_MAX_AGENTS", "4"))
+    cloud_max_agents: int = int(os.getenv("CLOUD_MAX_AGENTS", "5"))
     edge_max_agents: int = int(os.getenv("EDGE_MAX_AGENTS", "2"))
 
     # Link monitoring / failover
@@ -75,7 +75,7 @@ class Settings:
     health_timeout_s: float = _f("HEALTH_TIMEOUT_S", 3.0)
     fail_threshold: int = int(os.getenv("FAIL_THRESHOLD", "2"))
     first_token_timeout_s: float = _f("FIRST_TOKEN_TIMEOUT_S", 30.0)
-    stall_timeout_s: float = _f("STALL_TIMEOUT_S", 10.0)
+    stall_timeout_s: float = _f("STALL_TIMEOUT_S", 20.0)
 
     data_dir: Path = Path(os.getenv("DATA_DIR", str(ROOT / "data")))
     max_agent_steps: int = int(os.getenv("MAX_AGENT_STEPS", "6"))

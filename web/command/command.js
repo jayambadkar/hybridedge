@@ -45,6 +45,7 @@ const SCRIPT = [
 const blank = () => ({
   sessionId: null, responseId: null, started: null, reports: [], busy: false, queued: false,
   movement: null, zones: null, deployment: null, brief: "", flow: null, where: null, agents: {}, order: [], scriptIdx: 0,
+  review: null, casualty: null, publicm: null,
 });
 const S = Object.assign(blank(), { link: null, resources: { arv: 4, ambulance: 3 } });
 try { Object.assign(S, JSON.parse(localStorage.getItem("command.v1") || "{}"), { busy: false, queued: false, link: null }); } catch {}
@@ -53,12 +54,27 @@ const save = () => { try { const { link, busy, queued, ...rest } = S; localStora
 /* ------------------------------------------------------------------ helpers */
 function md(src) {
   const lines = esc(src || "").split("\n");
-  let html = "", list = null;
-  const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  const close = () => { if (list) { html += `</${list}>`; list = null; } };
+  let html = "", list = null, table = null;
+  const inline = (s) => s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "$1");
+  const closeTable = () => {
+    if (!table) return;
+    const [head, ...rows] = table;
+    html += `<table><thead><tr>${head.map((c) => `<th>${inline(c)}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+    table = null;
+  };
+  const close = () => { closeTable(); if (list) { html += `</${list}>`; list = null; } };
   for (const raw of lines) {
     const line = raw.trimEnd(); let m;
-    if ((m = line.match(/^\s*#{1,4}\s+(.*)$/))) { close(); html += `<p><strong>${inline(m[1])}</strong></p>`; }
+    if (/^\s*\|.*\|\s*$/.test(line)) {
+      if (list) { html += `</${list}>`; list = null; }
+      const cells = line.trim().slice(1, -1).split("|").map((c) => c.trim());
+      if (cells.every((c) => /^:?-{2,}:?$/.test(c))) continue;
+      (table ||= []).push(cells);
+      continue;
+    }
+    closeTable();
+    if ((m = line.match(/^\s*&gt;\s?(.*)$/))) { close(); html += `<blockquote>${inline(m[1])}</blockquote>`; }
+    else if ((m = line.match(/^\s*#{1,4}\s+(.*)$/))) { close(); html += `<h4>${inline(m[1])}</h4>`; }
     else if ((m = line.match(/^\s*[-*•]\s+(.*)$/))) { if (list !== "ul") { close(); html += "<ul>"; list = "ul"; } html += `<li>${inline(m[1])}</li>`; }
     else if ((m = line.match(/^\s*\d+[.)]\s+(.*)$/))) { if (list !== "ol") { close(); html += "<ol>"; list = "ol"; } html += `<li>${inline(m[1])}</li>`; }
     else if (!line.trim()) close();
@@ -105,7 +121,7 @@ setInterval(() => {
 /* ---------------------------------------------------------------------- map */
 const map = L.map("map", { zoomControl: true }).setView([60.1705, 24.9375], 16);
 L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' }).addTo(map);
-const layers = { zones: L.layerGroup().addTo(map), path: L.layerGroup().addTo(map), risk: L.layerGroup().addTo(map), reports: L.layerGroup().addTo(map), points: L.layerGroup().addTo(map), units: L.layerGroup().addTo(map) };
+const layers = { extras: L.layerGroup().addTo(map), zones: L.layerGroup().addTo(map), path: L.layerGroup().addTo(map), risk: L.layerGroup().addTo(map), reports: L.layerGroup().addTo(map), points: L.layerGroup().addTo(map), units: L.layerGroup().addTo(map) };
 const legend = L.control({ position: "bottomleft" });
 legend.onAdd = () => {
   const d = L.DomUtil.create("div", "legend");
@@ -165,7 +181,20 @@ function drawUnits() {
   }
   for (const id of Object.keys(unitMarkers)) if (!seen.has(id)) { layers.units.removeLayer(unitMarkers[id]); delete unitMarkers[id]; }
 }
-function drawAll() { drawZones(); drawRisk(); drawReports(); drawUnits(); }
+function drawExtras() {
+  layers.extras.clearLayers();
+  for (const h of (S.casualty && S.casualty.hospitals) || []) {
+    L.marker([h.lat, h.lon], { icon: icon("mk-hosp", "H") }).bindTooltip(`<b>${esc(h.hospital)}</b><br>P1 ${h.p1} · P2 ${h.p2} · ${h.eta_min} min by road`).addTo(layers.extras);
+  }
+  const stations = { "Kamppi metro station": [60.1687, 24.9312], "Rautatientori metro station": [60.1706, 24.9415], "Helsingin yliopisto metro station": [60.17276, 24.9486], "Helsinki Central railway station": [60.17155, 24.94059], "Kamppi bus terminal": [60.16965, 24.9333] };
+  for (const t of (S.publicm && S.publicm.transport) || []) {
+    const ll = stations[t.name];
+    if (!ll) continue;
+    const closed = /^Close/.test(t.action);
+    L.marker(ll, { icon: icon(`mk-stn${closed ? "" : " out"}`, closed ? `${t.kind === "rail" ? "Rail" : t.kind === "bus" ? "Bus" : "Metro"} closed` : "Outbound only"), zIndexOffset: 200 }).bindTooltip(`${esc(t.name)}: ${esc(t.action)}`).addTo(layers.extras);
+  }
+}
+function drawAll() { drawZones(); drawRisk(); drawReports(); drawUnits(); drawExtras(); }
 
 /* ------------------------------------------------------------------- panels */
 function renderThreat() {
@@ -187,7 +216,7 @@ function renderReports() {
     `<li><span class="rnum">${i + 1}</span><span><span class="rtype">${esc(r.type)}</span> · ${esc(nearest(r))}<br><span class="muted">${esc(r.text)}</span></span><span class="rtime">${hhmm(r.t * 1000)}</span></li>`).join("")
     || `<li class="placeholder">No reports yet. Use “Add report” or “Next exercise report”.</li>`;
 }
-const TOOL_DOING = { analyse_movement: "Analysing reports", set_zones: "Setting zones", plan_deployment: "Deploying units", lookup_protocol: "Checking procedure", start_triage: "Running triage", log_event: "Logging" };
+const TOOL_DOING = { analyse_movement: "Analysing reports", set_zones: "Setting zones", plan_deployment: "Deploying units", casualty_plan: "Planning casualty care", public_measures: "Drafting the public alert", check_plan: "Checking the plan for conflicts", lookup_protocol: "Checking procedure", start_triage: "Running triage", log_event: "Logging" };
 function renderAgents() {
   const w = S.where;
   if (w) {
@@ -196,10 +225,40 @@ function renderAgents() {
     $("#where").innerHTML = `<b>${S.busy ? "Running on" : "Last run on"} ${esc(providerName(w.target))}</b>${w.reason ? ` — ${esc(w.reason)}` : ""}`;
   } else { $("#where").className = "where"; $("#where").textContent = ""; }
   $("#agents").innerHTML = S.order.map((id) => {
-    const a = S.agents[id]; const dev = a.target === "edge";
-    return `<li><span class="dot ${a.status}"></span><div><div class="ag-n">${esc(a.title)}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div></div></li>`;
+    const a = S.agents[id]; const dev = a.target === "edge"; const open = openAgents.has(id);
+    return `<li class="${open ? "open" : ""}"><span class="dot ${a.status}"></span><div><div class="ag-n ag-row" data-ag="${esc(id)}">${esc(a.title)}${a.revision ? `<span class="rev">Revision</span>` : ""}${a.added ? `<span class="rev">Added by review</span>` : ""}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}${a.output ? `<span class="ag-more">${open ? "Hide report" : "Report"}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div>${open && a.output ? `<div class="ag-report md">${md(a.output)}</div>` : ""}</div></li>`;
   }).join("") || (S.busy ? `<li><span class="dot running"></span><div><div class="ag-n">Incident commander</div><div class="ag-a">Choosing advisers…</div></div></li>` : `<li class="placeholder">Runs after each report.</li>`);
   $("#howBtn").hidden = !S.flow;
+  renderReview();
+}
+const openAgents = new Set();
+function renderReview() {
+  const r = S.review;
+  const el = $("#review");
+  if (!r || !r.verdict) { el.hidden = true; return; }
+  el.hidden = false;
+  const revised = new Set((r.revisions || []).map((x) => x.role));
+  const items = (r.issues || []).map((i) => `<li class="${esc(i.severity)}"><span class="sev">${esc(i.severity)}</span><span class="own">${esc(ROLE_TITLE[i.owner] || i.owner)}</span> — ${esc(i.issue)}${i.fix ? ` <span class="muted">Fix: ${esc(i.fix)}</span>` : ""}${i.severity === "high" && revised.has(i.owner) ? `<span class="st">${(r.revisions || []).find((x) => x.role === i.owner && x.added) ? "Specialist added" : "Sent back"}</span>` : ""}</li>`).join("");
+  const after = r.after_revision ? `<div class="after">${r.after_revision.issues.length ? `After revision, still open: ${r.after_revision.issues.map((i) => esc(i.issue)).join(" · ")}` : "After revision: no conflicts left."}</div>` : "";
+  el.innerHTML = `<h4>Plan review</h4><p>${esc(r.verdict)}</p>${items ? `<ul class="issues">${items}</ul>` : ""}${after}`;
+}
+const ROLE_TITLE = { intelligence: "Intelligence", firearms: "Firearms tactics", zones: "Zones and cordons", casualties: "Casualty care", public_warning: "Public warning" };
+function renderCasualties() {
+  const c = S.casualty;
+  $("#casCard").hidden = !c || !c.casualties;
+  if (!c || !c.casualties) return;
+  $("#cas").innerHTML = `<div class="triage"><div class="t1">P1 immediate<b>${c.triage.P1_immediate}</b></div><div class="t2">P2 urgent<b>${c.triage.P2_urgent}</b></div><div class="t3">P3 minor<b>${c.triage.P3_minor}</b></div></div>
+    ${c.shortfall ? `<p class="short">Ambulances: need ${c.ambulances_needed}, have ${c.ambulances_available} — short by ${c.shortfall}</p>` : `<p class="muted" style="margin:0 0 8px">Ambulances: need ${c.ambulances_needed}, have ${c.ambulances_available}</p>`}
+    <table class="tbl"><thead><tr><th>Hospital</th><th>P1</th><th>P2</th><th>Road</th></tr></thead><tbody>${c.hospitals.map((h) => `<tr><td>${esc(h.hospital)}</td><td class="n">${h.p1}</td><td class="n">${h.p2}</td><td class="n">${h.eta_min} min</td></tr>`).join("")}</tbody></table>`;
+}
+function renderAlert() {
+  const p = S.publicm;
+  $("#alertCard").hidden = !p || !p.alert_en;
+  if (!p || !p.alert_en) return;
+  const rows = [...(p.evacuate || []), ...(p.lockdown || [])];
+  $("#alert").innerHTML = `<div class="alert-txt"><span class="lang">English</span>${esc(p.alert_en)}</div><div class="alert-txt"><span class="lang">Suomi</span>${esc(p.alert_fi)}</div>
+    ${rows.length ? `<table class="tbl"><thead><tr><th>Place</th><th>Action</th></tr></thead><tbody>${rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(r.action)}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${(p.transport || []).length ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Station</th><th>Action</th></tr></thead><tbody>${p.transport.map((t) => `<tr><td>${esc(t.name)}</td><td>${esc(t.action)}</td></tr>`).join("")}</tbody></table>` : ""}`;
 }
 function renderBrief() {
   $("#brief").innerHTML = S.brief ? `<div class="${S.busy ? "cursor" : ""}">${md(S.brief)}</div>` : `<p class="placeholder">${S.busy ? "Advisers are working…" : "Appears after the first report."}</p>`;
@@ -218,7 +277,8 @@ function renderAll() {
   $("#exTag").hidden = !active;
   $("#addReport").disabled = !active; $("#nextReport").disabled = !active || S.scriptIdx >= SCRIPT.length;
   if (S.sessionId) $("#consoleLink").href = `/#session=${S.sessionId}`;
-  renderThreat(); renderReports(); renderAgents(); renderBrief(); renderUnits();
+  renderThreat(); renderReports(); renderAgents(); renderBrief(); renderUnits(); renderCasualties(); renderAlert();
+  $("#planBtn").hidden = !S.brief || S.busy;
 }
 
 /* ------------------------------------------------------------------- agents */
@@ -235,7 +295,7 @@ function describe(r, i) {
 }
 async function analyse() {
   if (S.busy) { S.queued = true; return; }
-  S.busy = true; S.queued = false; S.agents = {}; S.order = []; S.where = null; S.brief = "";
+  S.busy = true; S.queued = false; S.agents = {}; S.order = []; S.where = null; S.brief = ""; S.review = null; openAgents.clear();
   renderAll();
   try {
     await ensureSession();
@@ -275,6 +335,7 @@ function onEvent(ev) {
   switch (ev.type) {
     case "response.created": S.responseId = ev.response.id; break;
     case "hybridedge.step_start":
+      if (ev.task_id === "review" && !S.agents.review) { S.agents.review = { title: "Plan review", status: "running", action: "Checking the plan for conflicts and gaps…", target: null }; S.order.push("review"); }
       if (ev.task_id === "plan" || ev.task_id === "synth") S.where = { target: ev.target, reason: ev.reason };
       else if (a) { a.status = "running"; a.target = ev.target; if (!a.result) { a.action = "Thinking…"; a.tone = ""; } }
       schedule(renderAgents); break;
@@ -283,7 +344,8 @@ function onEvent(ev) {
       for (const t of ev.plan.tasks) S.agents[t.id] = { title: t.title, status: "queued", action: t.task, target: null };
       renderAgents(); break;
     case "hybridedge.tool_call":
-      if (a) { a.action = `${TOOL_DOING[ev.name] || ev.name}…`; a.tone = ""; }
+      if (ev.task_id === "review" && !S.agents.review) { S.agents.review = { title: "Plan review", status: "running", action: "Checking the plan for conflicts and gaps…", target: null }; S.order.push("review"); }
+      { const ag = S.agents[ev.task_id]; if (ag) { ag.action = `${TOOL_DOING[ev.name] || ev.name}…`; ag.tone = ""; } }
       schedule(renderAgents); break;
     case "hybridedge.tool_result": {
       const r = ev.result || {};
@@ -294,7 +356,10 @@ function onEvent(ev) {
         map.flyToBounds(c.toBounds(r.warm.radius_m * 2.3), { duration: 0.8, paddingTopLeft: [10, 50] });
       }
       if (ev.name === "plan_deployment" && r.units) { S.deployment = r; drawUnits(); renderUnits(); }
+      if (ev.name === "casualty_plan" && r.triage) { S.casualty = r; renderCasualties(); drawExtras(); }
+      if (ev.name === "public_measures" && r.alert_en) { S.publicm = r; renderAlert(); drawExtras(); }
       if (a && r.summary) { a.action = r.summary; a.result = true; a.tone = "good"; }
+      else if (a && /…$/.test(a.action)) { a.action = ev.name === "log_event" ? "Logged to incident log" : "Done"; a.tone = "good"; }
       save(); schedule(renderAgents); break;
     }
     case "hybridedge.failover":
@@ -306,10 +371,20 @@ function onEvent(ev) {
       S.where = { target: ev.to, reason: ev.reason };
       schedule(renderAgents); break;
     case "hybridedge.agent_done":
-      if (a) { a.status = "done"; if (!a.result) { a.action = "Advice ready"; a.tone = "good"; } }
+      if (a) {
+        a.status = "done"; a.output = (ev.result && ev.result.output) || "";
+        if (!a.result || /…$/.test(a.action)) { a.action = "Report ready"; a.tone = "good"; }
+      }
+      save(); schedule(renderAgents); break;
+    case "hybridedge.review":
+      S.review = ev.review;
+      if (S.agents.review) { S.agents.review.status = "done"; S.agents.review.action = ev.review.verdict || "Review done"; S.agents.review.tone = (ev.review.issues || []).length ? "warn" : "good"; }
+      save(); schedule(renderAgents); break;
+    case "hybridedge.revise":
+      for (const t of ev.tasks) { S.agents[t.id] = { title: t.title, status: "queued", action: t.added ? "Added by the plan review" : "Revising after review", target: null, revision: !t.added, added: !!t.added, tone: "warn" }; S.order.push(t.id); }
       schedule(renderAgents); break;
     case "hybridedge.flow":
-      S.flow = ev.flow; if (!$("#modal").hidden) renderModal(); break;
+      S.flow = ev.flow; if (!$("#modal").hidden && modalKind === "flow") renderModal(); break;
     case "response.output_text.delta": S.brief += ev.delta; schedule(renderBrief); break;
     case "hybridedge.output_reset": S.brief = ""; schedule(renderBrief); break;
     case "response.completed": S.responseId = ev.response.id; S.brief = ev.response.output_text || S.brief; break;
@@ -352,8 +427,35 @@ map.on("click", (e) => {
 });
 
 /* -------------------------------------------------------------------- modal */
-function renderModal() { $("#modalBody").innerHTML = S.flow ? HybridFlow.render(S.flow) : "<p>No analysis yet.</p>"; }
-$("#howBtn").addEventListener("click", () => { renderModal(); $("#modal").hidden = false; });
+let modalKind = "flow";
+function renderModal() {
+  const card = document.querySelector(".modal-card");
+  card.classList.toggle("wide", modalKind === "plan");
+  if (modalKind === "flow") {
+    $("#modalTitle").textContent = "How the analysis ran";
+    $("#modalBody").innerHTML = S.flow ? HybridFlow.render(S.flow) : "<p>No analysis yet.</p>";
+    return;
+  }
+  $("#modalTitle").textContent = `Operational plan · ${hhmm(Date.now())}`;
+  const reports = S.order.filter((id) => S.agents[id] && S.agents[id].output && id !== "review").map((id) => `<h2>${esc(S.agents[id].title)}${S.agents[id].revision ? " (revised)" : ""}</h2><div class="md">${md(S.agents[id].output)}</div>`).join("");
+  $("#modalBody").innerHTML = `<div class="doc"><h2>Commander's brief</h2><div class="md">${md(S.brief)}</div>
+    ${S.review && S.review.verdict ? `<h2>Plan review</h2><div class="review" style="border:0;margin:0;padding:0">${$("#review").innerHTML}</div>` : ""}
+    ${reports}</div>`;
+}
+$("#howBtn").addEventListener("click", () => { modalKind = "flow"; renderModal(); $("#modal").hidden = false; });
+$("#planBtn").addEventListener("click", () => { modalKind = "plan"; renderModal(); $("#modal").hidden = false; });
+$("#agents").addEventListener("click", (e) => {
+  const row = e.target.closest("[data-ag]");
+  if (!row) return;
+  const id = row.dataset.ag;
+  if (!S.agents[id] || !S.agents[id].output) return;
+  openAgents.has(id) ? openAgents.delete(id) : openAgents.add(id);
+  renderAgents();
+});
+$("#copyAlert").addEventListener("click", async () => {
+  if (!S.publicm) return;
+  try { await navigator.clipboard.writeText(`${S.publicm.alert_en}\n\n${S.publicm.alert_fi}`); toast("Alert copied", true); } catch { toast("Copy failed"); }
+});
 $("#modalClose").addEventListener("click", () => ($("#modal").hidden = true));
 $("#modal").addEventListener("click", (e) => { if (e.target === $("#modal")) $("#modal").hidden = true; });
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") { $("#modal").hidden = true; if (adding) setAdding(false); } });

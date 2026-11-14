@@ -90,28 +90,33 @@ POLICE_ROLES: dict[str, dict[str, Any]] = {
 MTA_ROLES: dict[str, dict[str, Any]] = {
     "intelligence": {
         "title": "Intelligence",
-        "brief": "Works out where the attackers are, where they are heading, how many, what weapons, and which crowded places are at risk. Uses analyse_movement.",
+        "brief": "Works out where the attackers are, where they are heading, how many, what weapons, and which crowded places are at risk. Call analyse_movement first.",
         "tools": ["analyse_movement", "log_event"],
+        "report": "### Situation picture\n2-3 sentences.\n### Movement\nTable: report | time | place | what happened.\n### Assessment\nNumbered hypotheses with likelihood (e.g. 'Heading for Central Station — likely').\n### Places at risk\nTable: place | ETA | why.\n### Intelligence gaps\nBullets: what we need to confirm and who should find out.",
     },
     "firearms": {
         "title": "Firearms tactics",
-        "brief": "Deploys armed response vehicles (ARVs) to locate, contain and stop the attackers. Uses plan_deployment.",
+        "brief": "Deploys armed response vehicles (ARVs) to locate, contain and stop the attackers. Call plan_deployment first.",
         "tools": ["plan_deployment", "analyse_movement"],
+        "report": "### Deployment\nTable: unit | position | task.\n### Tactics\nNumbered: intercept, containment, rules for engaging, coordination with the hot zone.\n### Risks\nBullets: crossfire, crowds, second attack.",
     },
     "zones": {
         "title": "Zones and cordons",
-        "brief": "Sets hot, warm and cold zones, the rendezvous point (RVP), casualty collection point (CCP) and forward command post. Uses set_zones.",
+        "brief": "Sets hot, warm and cold zones, the rendezvous point (RVP), casualty collection point (CCP) and forward command post. Call set_zones first.",
         "tools": ["set_zones"],
+        "report": "### Zones\nTable: zone | radius | centred on | who may enter.\n### Key points\nTable: point | location | purpose.\n### Access and exit\nBullets: approach routes for responders and exit routes for the public, away from the attackers' direction.",
     },
     "casualties": {
         "title": "Casualty care",
-        "brief": "Plans casualty care: CCP, ambulance staging at the RVP, warm-zone access and triage priorities.",
-        "tools": ["set_zones", "start_triage", "lookup_protocol"],
+        "brief": "Plans casualty care: triage numbers, ambulances, CCP, warm-zone access and hospital allocation. Call casualty_plan first.",
+        "tools": ["casualty_plan", "set_zones", "lookup_protocol"],
+        "report": "### Casualties\nTable: priority | count | care.\n### Ambulances\nNeeded vs available and how to close any gap (mutual aid, buses for P3).\n### Hospitals\nTable: hospital | P1 | P2 | road ETA.\n### Warm-zone access\nBullets: who goes in, with what protection, under whose escort.",
     },
     "public_warning": {
         "title": "Public warning",
-        "brief": "Writes the public alert (Run, Hide, Tell) and lists places to evacuate or lock down. Uses analyse_movement.",
-        "tools": ["analyse_movement"],
+        "brief": "Prepares the public alert (Run, Hide, Tell), places to lock down or shelter, and public transport closures. Call public_measures first.",
+        "tools": ["public_measures", "analyse_movement"],
+        "report": "### Public alert\nQuote the English text and the Finnish text exactly.\n### Lock down / shelter\nTable: place | action.\n### Public transport\nTable: station | action.\n### Social media line\nOne sentence for police channels.",
     },
 }
 
@@ -174,7 +179,10 @@ def merge_results(left: list[dict], right: list[dict] | dict) -> list[dict]:
 
 
 class State(TypedDict, total=False):
-    profile: str  # which agent team runs this session ("incident" | "police_tactical")
+    profile: str  # which agent team runs this session ("incident" | "police_tactical" | "mta")
+    review: dict  # reviewer findings for the current turn
+    review_round: int
+    revisions: list[dict]
     messages: Annotated[list[dict], operator.add]
     plan: dict
     results: Annotated[list[dict], merge_results]
@@ -245,7 +253,7 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         t["title"] = ALL_ROLES[t["role"]]["title"]
     p = {"turn_id": uuid.uuid4().hex[:8], "tasks": tasks, "planned_on": msg["meta"]["target"], "budget": budget}
     emit({"type": "plan", "plan": p})
-    return {"plan": p, "results": {"__reset__": True}}
+    return {"plan": p, "results": {"__reset__": True}, "review": {}, "review_round": 0, "revisions": []}
 
 
 def fan_out(state: State) -> list[Send]:
@@ -284,6 +292,10 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
     async def call(target: str, step_id: str) -> dict:
         role = ALL_ROLES[task["role"]]
         system = f"You are the {role['title']} specialist. {role['brief']}\n" + COMMON.format(now=_now())
+        if role.get("report") and target != EDGE:
+            system += "\nAfter using your tools, write your report in exactly this structure (markdown):\n" + role["report"]
+        if task.get("revision"):
+            system += "\nThis is a REVISION requested by the plan reviewer: fix the listed issues and return your full, updated report."
         if target == EDGE:
             system += EDGE_NOTE
         history = state.get("context", []) + [{"role": "user", "content": f"Your assigned sub-task: {task['task']}"}]
@@ -364,7 +376,8 @@ Use exactly these sections, each brief:
 **Casualty care** — CCP, ambulances, warm-zone access.
 **Public warning** — the alert text to send (Run, Hide, Tell) and places to evacuate or lock down.
 **METHANE** — one line each: Major incident, Exact location, Type, Hazards, Access, Number of casualties, Emergency services.
-Use the tool results exactly (names, distances, ETAs). Do not invent facts. Current local time: {now}."""
+Use the tool results exactly (names, distances, ETAs). Where the plan reviewer flagged an issue, state how it was resolved.
+Do not invent facts. Current local time: {now}."""
 
 PROFILES_EXTRA = {
     "mta": {
@@ -378,6 +391,8 @@ PROFILES_EXTRA = {
             {"role": "zones", "task": "Set zones, RVP, CCP and command post from the latest reports."},
         ],
         "synth": MTA_SYNTH,
+        "review": True,
+        "check_tool": "check_plan",
     }
 }
 
@@ -390,6 +405,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         "plan_extra": "",
         "fallback": None,
         "synth": SYNTH_PROMPT,
+        "review": True,
     },
     "police_tactical": {
         "label": "Police tactical response team",
@@ -402,16 +418,123 @@ PROFILES: dict[str, dict[str, Any]] = {
             {"role": "formation", "task": "Assign the available officers to positions."},
         ],
         "synth": POLICE_SYNTH,
+        "review": True,
     },
     **PROFILES_EXTRA,
 }
 
 
+REVIEW_PROMPT = """You are the plan reviewer for an incident command team. Read the specialists' reports and the automatic consistency checks.
+Find real problems only: contradictions between reports, numbers that disagree with tool results, gaps (unassigned places at risk,
+missing resources), unsafe advice (e.g. sending unprotected staff into the hot zone). Ignore style.
+Respond with JSON only:
+{"verdict": "<one sentence>", "issues": [{"severity": "high|medium|low", "owner": "<specialist role id>", "issue": "<what is wrong>", "fix": "<what to change>"}]}
+Specialist role ids: {roles}."""
+
+
+def _latest_by_role(state: State) -> list[dict]:
+    p = state["plan"]
+    order = {t["role"]: i for i, t in enumerate(p["tasks"])}
+    latest: dict[str, dict] = {}
+    for r in state.get("results", []):
+        latest[r["role"]] = r  # later results (revisions) replace earlier ones
+        order.setdefault(r["role"], len(order))  # specialists added by the reviewer go last
+    return sorted(latest.values(), key=lambda r: order[r["role"]])
+
+
+async def review(state: State, config: RunnableConfig) -> dict:
+    """Check the specialists' work against each other; send flagged items back once for revision.
+
+    Runs only with cloud capacity: on the device the loop is skipped to save time."""
+    prof = PROFILES[state.get("profile") or "incident"]
+    rnd = state.get("review_round", 0)
+    results = _latest_by_role(state)
+    if not prof.get("review") or len(results) < 2 or not router.online:
+        return {"revisions": []}
+    emit = _emitter({"agent": "review", "task_id": "review"})
+    thread_id = config["configurable"]["thread_id"]
+    checks: dict = {"issues": []}
+    if prof.get("check_tool"):
+        call_id = f"chk_{uuid.uuid4().hex[:8]}"
+        emit({"type": "tool_call", "step_id": call_id, "id": call_id, "name": prof["check_tool"], "args": "{}", "agent": "review", "task_id": "review"})
+        content, checks = await run_tool(prof["check_tool"], "{}", thread_id, "edge")
+        emit({"type": "tool_result", "id": call_id, "name": prof["check_tool"], "result": checks, "agent": "review", "task_id": "review"})
+    if rnd >= 1:
+        # Second pass after revisions: confirm with the deterministic checks only.
+        rv = dict(state.get("review") or {})
+        rv["after_revision"] = {"issues": checks.get("issues", []), "summary": checks.get("summary", "Re-checked")}
+        emit({"type": "review", "review": rv, "round": rnd})
+        return {"review": rv, "revisions": [], "review_round": rnd + 1}
+
+    roles = ", ".join(r["role"] for r in results)
+    reports = "\n\n".join(f"## {r['title']} ({r['role']})\n{r['output'][:4000]}" for r in results)
+    auto = "\n".join(f"- [{i['severity']}] {i['owner']}: {i['issue']}" for i in checks.get("issues", [])) or "- none"
+
+    async def call(target: str, step_id: str) -> dict:
+        msgs = [
+            {"role": "system", "content": REVIEW_PROMPT.replace("{roles}", roles)},
+            {"role": "user", "content": f"Automatic checks:\n{auto}\n\nReports:\n{reports}"},
+        ]
+        return await router.stream_step(target, msgs, None, emit, step_id, json_mode=True, max_tokens=900, silent=True)
+
+    msg = await run_with_failover(call, emit, {"agent": "review", "task_id": "review", "phase": "review"})
+    found: list[dict] = []
+    verdict = ""
+    try:
+        raw = msg["content"]
+        data = json.loads(raw[raw.find("{") : raw.rfind("}") + 1])
+        verdict = str(data.get("verdict", ""))[:300]
+        for i in data.get("issues", [])[:8]:
+            if i.get("owner") in prof["roles"] and str(i.get("issue", "")).strip():
+                found.append({"severity": str(i.get("severity", "medium")).lower(), "owner": i["owner"], "issue": str(i["issue"])[:300], "fix": str(i.get("fix", ""))[:300], "source": "reviewer"})
+    except Exception:
+        pass
+    for i in checks.get("issues", []):
+        if not any(f["owner"] == i["owner"] and f["issue"] == i["issue"] for f in found):
+            found.append({**i, "fix": "", "source": "check"})
+    rv = {"verdict": verdict or (f"{len(found)} issue(s) found" if found else "Plan is consistent."), "issues": found}
+    # Send high-severity issues back to their owners for one revision round.
+    by_owner: dict[str, list[dict]] = {}
+    for i in found:
+        if i["severity"] == "high":
+            by_owner.setdefault(i["owner"], []).append(i)
+    revisions = []
+    prev = {r["role"]: r for r in results}
+    for role, items in by_owner.items():
+        if role not in prof["roles"]:
+            continue
+        notes = "; ".join(f"{i['issue']}{(' Fix: ' + i['fix']) if i.get('fix') else ''}" for i in items)
+        if role in prev:
+            revisions.append({
+                "id": uuid.uuid4().hex[:8], "role": role, "title": ALL_ROLES[role]["title"], "revision": True,
+                "task": f"Revise your report. Reviewer issues: {notes}", "previous": prev[role]["output"][:3000],
+            })
+        else:  # the planner left this specialist out, but the review found work for it
+            revisions.append({
+                "id": uuid.uuid4().hex[:8], "role": role, "title": ALL_ROLES[role]["title"], "revision": False, "added": True,
+                "task": f"Added by the plan reviewer: {notes}", "previous": "",
+            })
+    rv["revisions"] = [{"role": r["role"], "title": r["title"], "added": bool(r.get("added"))} for r in revisions]
+    emit({"type": "review", "review": rv, "round": rnd})
+    if revisions:
+        emit({"type": "revise", "tasks": [{k: v for k, v in r.items() if k != "previous"} for r in revisions]})
+    return {"review": rv, "revisions": revisions, "review_round": rnd + 1}
+
+
+def route_review(state: State):
+    revs = state.get("revisions") or []
+    if not revs:
+        return "synthesize"
+    ctx = _conversation(state["messages"])
+    return [Send("specialist", {"task": {k: v for k, v in t.items() if k != "previous"},
+                                "context": ctx + ([{"role": "assistant", "content": f"(Your previous report)\n{t['previous']}"}] if t.get("previous") else []),
+                                "messages": [], "results": []}) for t in revs]
+
+
 async def synthesize(state: State, config: RunnableConfig) -> dict:
     p = state["plan"]
-    order = {t["id"]: i for i, t in enumerate(p["tasks"])}
-    results = sorted([r for r in state.get("results", []) if r["task_id"] in order], key=lambda r: order[r["task_id"]])
-    workflow = {"plan": p, "results": results}
+    results = _latest_by_role(state)
+    workflow = {"plan": p, "results": results, "all_results": state.get("results", []), "review": state.get("review") or {}}
     ctx = {"agent": "lead", "task_id": "synth", "phase": "synthesize"}
     emit = _emitter(ctx)
     prof = PROFILES[state.get("profile") or "incident"]
@@ -444,9 +567,11 @@ def build_graph(checkpointer):
     g = StateGraph(State)
     g.add_node("plan", plan)
     g.add_node("specialist", build_specialist())
+    g.add_node("review", review)
     g.add_node("synthesize", synthesize)
     g.add_edge(START, "plan")
     g.add_conditional_edges("plan", fan_out, ["specialist"])
-    g.add_edge("specialist", "synthesize")
+    g.add_edge("specialist", "review")
+    g.add_conditional_edges("review", route_review, ["specialist", "synthesize"])
     g.add_edge("synthesize", END)
     return g.compile(checkpointer=checkpointer)

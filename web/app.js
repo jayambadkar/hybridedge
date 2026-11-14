@@ -433,7 +433,9 @@ function answerHTML(text, meta, { streaming = false, isLast = false, flow = null
 
 function agentsFromResults(wf) {
   const out = {};
-  for (const r of wf.results) out[r.task_id] = { id: r.task_id, title: r.title, task: r.task, status: "done", output: r.output, targets: r.targets, steps: r.steps, tools: r.tools, failovers: r.failover ? [{ generic: true }] : [] };
+  const byRole = {};
+  for (const t of wf.plan.tasks) byRole[t.role] = t.id;
+  for (const r of wf.results) out[byRole[r.role] || r.task_id] = { id: r.task_id, title: r.title, task: r.task, status: "done", output: r.output, targets: r.targets, steps: r.steps, tools: r.tools, failovers: r.failover ? [{ generic: true }] : [] };
   return out;
 }
 

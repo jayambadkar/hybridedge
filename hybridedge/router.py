@@ -56,6 +56,7 @@ class ProviderState:
         )
         self.reachable = False
         self.inflight = 0  # generations currently streaming from this provider
+        self.last_token_at = 0.0  # when this provider last streamed a chunk
         self.served = 0  # generations completed (for the settings view)
         self.disabled = False  # operator-simulated outage
         self.latency_ms: float | None = None
@@ -298,6 +299,9 @@ class Router:
         if ok:
             s.latency_ms = round((time.perf_counter() - t0) * 1000)
             s.fails, s.last_error, s.reachable = 0, None, True
+        elif s.inflight > 0 and time.time() - s.last_token_at < 15:
+            # A slow health check while tokens are flowing means busy, not down.
+            s.last_error = None
         else:
             s.fails += 1
             s.last_error = err
@@ -378,6 +382,8 @@ class Router:
                     break
                 if ttft is None:
                     ttft = round((time.perf_counter() - t0) * 1000)
+                if target != EDGE:
+                    self.by_name[target].last_token_at = time.time()
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta

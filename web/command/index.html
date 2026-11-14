@@ -66,16 +66,27 @@
           <div class="card-h"><h3>AI analysis</h3><button class="link-btn" id="howBtn" hidden>How it ran</button></div>
           <div class="where" id="where"></div>
           <ul class="agents" id="agents"></ul>
+          <div class="review" id="review" hidden></div>
         </section>
 
         <section class="card">
-          <div class="card-h"><h3>Commander's brief</h3><span class="muted" id="briefState"></span></div>
+          <div class="card-h"><h3>Commander's brief</h3><span class="muted" id="briefState"></span><button class="link-btn" id="planBtn" hidden>Full plan</button></div>
           <div class="brief md" id="brief"></div>
         </section>
 
         <section class="card">
           <div class="card-h"><h3>Units</h3></div>
           <ul class="units" id="units"></ul>
+        </section>
+
+        <section class="card" id="casCard" hidden>
+          <div class="card-h"><h3>Casualties and hospitals</h3></div>
+          <div id="cas"></div>
+        </section>
+
+        <section class="card" id="alertCard" hidden>
+          <div class="card-h"><h3>Public alert</h3><button class="link-btn" id="copyAlert">Copy</button></div>
+          <div id="alert"></div>
         </section>
 
         <div class="side-foot">
