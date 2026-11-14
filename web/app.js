@@ -293,6 +293,47 @@ function closeSettings() {
 }
 
 /* --------------------------------------------------------------- benchmarks */
+const NAMES = { gsm8k: "GSM8K", bfcl_simple: "BFCL simple", bfcl_multiple: "BFCL multiple", bfcl_parallel: "BFCL parallel" };
+const hbar = (v, cls, who, tip) => `<div class="bb-row" title="${esc(who)}: ${esc(tip)}"><span class="bb-who">${who}</span><span class="bb-track"><i class="${cls}" style="width:${v}%"></i></span><span class="bb-val">${v}%</span></div>`;
+
+// Accuracy vs link-loss rate. Cloud only loses cut answers; HybridEdge answers them on the device.
+function curve(c, d, p0, measured) {
+  const W = 820, H = 260, L = 44, R = 16, T = 14, B = 38;
+  const x = (p) => L + p * (W - L - R), y = (v) => T + (1 - v / 100) * (H - T - B);
+  const line = (f) => Array.from({ length: 21 }, (_, i) => i / 20).map((p, i) => `${i ? "L" : "M"}${x(p).toFixed(1)},${y(f(p)).toFixed(1)}`).join("");
+  const hyb = (p) => c * (1 - p) + d * p, co = (p) => c * (1 - p);
+  const grid = [0, 25, 50, 75, 100].map((v) => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" class="cv-grid"/><text x="${L - 8}" y="${y(v) + 4}" class="cv-ax" text-anchor="end">${v}%</text>`).join("");
+  const xt = [0, 0.25, 0.5, 0.75, 1].map((p) => `<text x="${x(p)}" y="${H - 12}" class="cv-ax" text-anchor="middle">${p * 100}%</text>`).join("");
+  return `<div class="cv" data-c="${c}" data-d="${d}"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="GSM8K accuracy versus link loss">
+    ${grid}${xt}<text x="${(L + W - R) / 2}" y="${H}" class="cv-ax" text-anchor="middle">Answers with the link cut</text>
+    <path d="${line(co)}" class="cv-l c"/><path d="${line(() => d)}" class="cv-l d"/><path d="${line(hyb)}" class="cv-l h"/>
+    <circle cx="${x(p0)}" cy="${y(measured)}" r="5" class="cv-dot"/>
+    <text x="${x(0.98)}" y="${y(hyb(0.98)) - 22}" class="cv-lab" text-anchor="end">HybridEdge</text><text x="${x(0.6)}" y="${y(co(0.6)) - 10}" class="cv-lab">Cloud only</text><text x="${x(0.02)}" y="${y(d) + 18}" class="cv-lab">Device only</text>
+    <line class="cv-hair" x1="0" x2="0" y1="${T}" y2="${H - B}" style="display:none"/></svg><div class="cv-tip" hidden></div></div>`;
+}
+
+function scenBars(scen) {
+  const max = Math.max(...scen.map((x) => x.total_s || 0), 1);
+  return scen.map((x) => {
+    const where = [x.advisers_cloud ? `${x.advisers_cloud} on cloud` : "", x.advisers_device ? `${x.advisers_device} on device` : "", x.deferred && x.deferred.length && !x.advisers_cloud ? `${x.deferred.length} wait for cloud` : ""].filter(Boolean).join(" · ");
+    return `<div class="sc-row" title="${esc(x.label)}: brief done at ${x.total_s} s · ${esc(where)}"><span class="sc-l">${esc(x.label)}</span>
+      <span class="bb-track"><i class="${x.advisers_cloud ? "h" : "d"}" style="width:${(100 * x.total_s) / max}%"></i></span><span class="bb-val">${x.total_s} s</span><span class="sc-w">${esc(where)}</span></div>`;
+  }).join("");
+}
+
+document.addEventListener("mousemove", (e) => {
+  const cv = e.target.closest && e.target.closest(".cv");
+  document.querySelectorAll(".cv .cv-hair").forEach((h) => { if (!cv || !cv.contains(h)) h.style.display = "none"; });
+  document.querySelectorAll(".cv .cv-tip").forEach((t) => { if (!cv || !cv.contains(t)) t.hidden = true; });
+  if (!cv) return;
+  const svg = cv.querySelector("svg"), r = svg.getBoundingClientRect();
+  const sx = ((e.clientX - r.left) / r.width) * 820, p = Math.min(1, Math.max(0, (sx - 44) / (820 - 60)));
+  const c = +cv.dataset.c, d = +cv.dataset.d, h = cv.querySelector(".cv-hair"), tip = cv.querySelector(".cv-tip");
+  h.setAttribute("x1", 44 + p * 760); h.setAttribute("x2", 44 + p * 760); h.style.display = "";
+  tip.hidden = false; tip.style.left = `${Math.min(r.width - 170, (e.clientX - r.left) + 12)}px`;
+  tip.innerHTML = `<b>${Math.round(p * 100)}% cut</b><span><i class="h"></i>HybridEdge ${(c * (1 - p) + d * p).toFixed(1)}%</span><span><i class="c"></i>Cloud only ${(c * (1 - p)).toFixed(1)}%</span><span><i class="d"></i>Device only ${d.toFixed(1)}%</span>`;
+});
+
 function renderBench() {
   const b = state.bench;
   const el = $("#bench");
@@ -316,10 +357,15 @@ function renderBench() {
   const scen = Object.values(sc);
   const fo = sys.failover, cp = sys.checkpoint;
   const tile = (v, l, sub) => `<div class="kpi"><div class="kpi-v">${v}</div><div class="kpi-l">${l}</div>${sub ? `<div class="kpi-s">${sub}</div>` : ""}</div>`;
+  const hy = b.hybrid;
+  const hyKeys = hy ? ["gsm8k", "bfcl_simple", "bfcl_multiple", "bfcl_parallel"].filter((k) => hy[k] && cloud[k]) : [];
+  const cloudOnly = (k) => Math.round(10 * cloud[k].accuracy * (hy[k].n - hy[k].cut) / hy[k].n) / 10; // cut items fail without a fallback
+  const hyN = hyKeys.reduce((a, k) => a + hy[k].n, 0), hyCut = hyKeys.reduce((a, k) => a + hy[k].cut, 0);
   const kpis = [
+    hy ? tile(`${hyN} of ${hyN}`, `Answers delivered with ${Math.round(hy.outage * 100)}% link loss`, `Cloud only: ${hyN - hyCut} of ${hyN}`) : "",
+    hy && hy.gsm8k ? tile(`${hy.gsm8k.accuracy}%`, "GSM8K through link loss", `Cloud only ${cloudOnly("gsm8k")}% · device only ${dev.gsm8k ? dev.gsm8k.accuracy : "–"}%`) : "",
     scen.length ? tile(`${scen.filter((x) => x.completed).length} of ${scen.length}`, "Network scenarios completed", "Full MTA workflow, every brief delivered") : "",
     fo && fo.resume_ms_p50 != null ? tile(`${(fo.resume_ms_p50 / 1000).toFixed(1)} s`, "Link lost → device writing", `Median of ${fo.n} cuts mid-answer`) : "",
-    keep != null ? tile(`${keep}%`, "Tool-calling accuracy kept on device", "BFCL, device vs cloud") : "",
     cp ? tile(`${cp.ms_per_checkpoint} ms`, "Per durable checkpoint", "SQLite, written before every step") : "",
   ].join("");
   const scRows = scen.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.completed ? `<span class="ok-t">Completed</span>` : `<span class="bad-t">Failed</span>`}</td>
@@ -335,12 +381,18 @@ function renderBench() {
       <p class="muted bb-foot">Marker: cut detected and the step handed to the device (median ${fo.detect_ms_p50} ms). Bar: first token from the device model, continuing the same answer. ${fo.completed} of ${fo.n} answers completed.</p></div>` : "";
   el.innerHTML = `<div class="col bench">
     <div class="kpis">${kpis}</div>
-    <div class="set-sec"><h2>Model quality</h2><p>Each tier in its production setup: Nemotron 3.5 Lightning 30B on Verda with reasoning, Nemotron 3.5 Bolt E4B on this MacBook Air without.</p>
+    ${hy ? `<div class="set-sec"><h2>Through link loss</h2><p>The same items with the cloud link cut mid-answer on ${Math.round(hy.outage * 100)}% of them (${hyCut} of ${hyN}). HybridEdge finishes those on the device; a cloud-only agent loses them.</p>
+      <div class="card">${hyKeys.map((k) => `<div class="bb"><div class="bb-h"><b>${NAMES[k]}</b><span class="bb-n">n = ${hy[k].n} · ${hy[k].cut} cut</span></div>
+        ${hbar(hy[k].accuracy, "h", "HybridEdge", `${hy[k].accuracy}% — measured, every item answered`)}${hbar(cloudOnly(k), "c", "Cloud only", `${cloudOnly(k)}% — cut items fail`)}${dev[k] ? hbar(dev[k].accuracy, "d", "Device only", `${dev[k].accuracy}% — measured`) : ""}</div>`).join("")}
+        <div class="bb-legend"><span><i class="h"></i>HybridEdge (measured)</span><span><i class="c"></i>Cloud only (cut items fail)</span><span><i class="d"></i>Device only (measured)</span></div></div></div>
+      ${hy.gsm8k && dev.gsm8k ? `<div class="set-sec"><h2>Any amount of link loss</h2><p>GSM8K accuracy as the share of cut answers grows, from each tier's measured accuracy. The dot is the measured HybridEdge run.</p><div class="card">${curve(cloud.gsm8k.accuracy, dev.gsm8k.accuracy, hy.outage, hy.gsm8k.accuracy)}</div></div>` : ""}` : ""}
+    ${scen.length ? `<div class="set-sec"><h2>Time to commander's brief</h2><p>Full marauding-attack workflow, three field reports. Every scenario delivered a brief.</p><div class="card">${scenBars(scen)}</div></div>` : ""}
+    <div class="set-sec"><h2>Each tier alone</h2><p>Each tier in its production setup: Nemotron 3.5 Lightning 30B on Verda with reasoning, Nemotron 3.5 Bolt E4B on this MacBook Air without.</p>
       <div class="card">${quality}<div class="bb-legend"><span><i class="c"></i>Cloud · Lightning 30B</span><span><i class="d"></i>Device · Bolt E4B</span></div></div></div>
     ${scen.length ? `<div class="set-sec"><h2>Network scenarios</h2><p>The full marauding-attack workflow (5 advisers, review, brief) from three field reports.</p>
       <div class="card tbl-wrap"><table class="tbl"><thead><tr><th>Network</th><th>Result</th><th>Brief starts</th><th>Done</th><th>Advisers</th><th>Deferred</th><th>Review</th><th>Checkpoints</th></tr></thead><tbody>${scRows}</tbody></table></div></div>` : ""}
     ${fo ? `<div class="set-sec"><h2>Failover</h2><p>The link is cut mid-answer; the same answer carries on from this device.</p>${foViz}</div>` : ""}
-    <p class="muted bb-foot">GSM8K test set and BFCL v3 (AST match), first n items, temperature 0. Updated ${esc(b.updated || "")}. Re-run with <code>bench/models.py</code> and <code>bench/system.py</code>.</p>
+    <p class="muted bb-foot">GSM8K test set and BFCL v3 (AST match), first n items, temperature 0. Link loss is injected 1–4 s into the cloud answer; cut items restart on the device, as the router does. Updated ${esc(b.updated || "")}. Re-run with <code>bench/models.py</code> and <code>bench/system.py</code>.</p>
   </div>`;
 }
 

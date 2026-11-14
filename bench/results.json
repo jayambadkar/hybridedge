@@ -69,7 +69,7 @@
    }
   }
  },
- "updated": "2026-11-14 22:16",
+ "updated": "2026-11-14 22:37",
  "system": {
   "checkpoint": {
    "steps": 200,
@@ -269,6 +269,34 @@
      "verda"
     ]
    }
+  }
+ },
+ "hybrid": {
+  "outage": 0.3,
+  "seed": 7,
+  "gsm8k": {
+   "n": 60,
+   "accuracy": 98.3,
+   "cut": 20,
+   "completed": 60
+  },
+  "bfcl_simple": {
+   "n": 40,
+   "accuracy": 100.0,
+   "cut": 16,
+   "completed": 40
+  },
+  "bfcl_multiple": {
+   "n": 40,
+   "accuracy": 97.5,
+   "cut": 13,
+   "completed": 40
+  },
+  "bfcl_parallel": {
+   "n": 40,
+   "accuracy": 82.5,
+   "cut": 17,
+   "completed": 40
   }
  }
 }
