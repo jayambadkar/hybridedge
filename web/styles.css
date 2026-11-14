@@ -352,3 +352,5 @@ body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; 
 .conn-drill { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); margin: -6px 0 16px; }
 .conn-drill .drill-tag { background: #6d28d9; color: #fff; }
 .note-up { color: var(--ok); }
+.plan-think { margin: -10px 0 0 26px; font: 12px/1.5 var(--mono); color: var(--muted); }
+.review-note { font-size: 13px; color: var(--ink-2); padding: 8px 12px; border-radius: 10px; background: var(--sunken); }

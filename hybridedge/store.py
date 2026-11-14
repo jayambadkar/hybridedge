@@ -169,3 +169,12 @@ async def get_context(thread_id: str) -> dict:
     async with aiosqlite.connect(DB) as db:
         rows = await db.execute_fetchall("SELECT data FROM contexts WHERE thread_id=?", (thread_id,))
     return json.loads(rows[0][0]) if rows else {}
+
+
+async def delete_thread(thread_id: str) -> None:
+    """Remove a session's index row and everything stored alongside it (not its checkpoints)."""
+    async with aiosqlite.connect(DB) as db:
+        for table in ("events", "responses", "flows", "contexts"):
+            await db.execute(f"DELETE FROM {table} WHERE thread_id=?", (thread_id,))
+        await db.execute("DELETE FROM threads WHERE id=?", (thread_id,))
+        await db.commit()

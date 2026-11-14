@@ -358,7 +358,8 @@ class Router:
             if not self.usable(s):
                 raise LinkLost(s.last_error or "unavailable")
             client, cut = s.client, s.cut
-            req.update(model=s.p.model, max_tokens=max_tokens or (4096 if settings.cloud_thinking else 2048))
+            # With reasoning on, leave room for the thinking before the visible answer.
+            req.update(model=s.p.model, max_tokens=(max_tokens or 2048) + (3072 if settings.cloud_thinking else 0))
             req["extra_body"] = {"chat_template_kwargs": {"enable_thinking": settings.cloud_thinking}}
         if tools:
             req["tools"] = tools
@@ -372,7 +373,15 @@ class Router:
         calls: dict[int, dict] = {}
         ttft = None
         try:
-            stream = await self._guard(client.chat.completions.create(**req), settings.first_token_timeout_s, cut)
+            for attempt in range(2):
+                try:
+                    stream = await self._guard(client.chat.completions.create(**req), settings.first_token_timeout_s, cut)
+                    break
+                except openai.APIConnectionError:
+                    # Flaky networks drop new connections; one immediate retry before failing over.
+                    if target == EDGE or attempt == 1:
+                        raise
+                    await asyncio.sleep(0.5)
             it = stream.__aiter__()
             while True:
                 timeout = settings.first_token_timeout_s if ttft is None else settings.stall_timeout_s
@@ -389,7 +398,7 @@ class Router:
                 delta = chunk.choices[0].delta
                 extra = delta.model_extra or {}
                 reasoning = extra.get("reasoning_content") or extra.get("reasoning")
-                if reasoning and not silent:
+                if reasoning:  # thinking is always shown, even when the answer itself is internal (JSON)
                     emit({"type": "reasoning", "step_id": step_id, "text": reasoning})
                 if delta.content:
                     text.append(delta.content)

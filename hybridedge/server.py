@@ -167,6 +167,28 @@ async def get_settings():
     }
 
 
+class CleanupBody(BaseModel):
+    keep_fraction: float = 0.1
+    dry_run: bool = False
+
+
+@app.post("/api/cleanup")
+async def cleanup(body: CleanupBody):
+    """Keep the most recently used sessions (default 10%) and delete the rest, with their
+    checkpoints, logs, saved flows and context. Running sessions are never deleted."""
+    import math
+
+    threads = await store.list_threads()  # newest first
+    keep_n = max(1, math.ceil(len(threads) * max(0.0, min(1.0, body.keep_fraction))))
+    doomed = [t for t in threads[keep_n:] if not (RUNS.get(t["id"]) and not RUNS[t["id"]].done)]
+    if not body.dry_run:
+        for t in doomed:
+            await graph().checkpointer.adelete_thread(t["id"])
+            await store.delete_thread(t["id"])
+            RUNS.pop(t["id"], None)
+    return {"total": len(threads), "kept": len(threads) - len(doomed), "deleted": len(doomed), "dry_run": body.dry_run}
+
+
 @app.get("/api/threads")
 async def threads():
     out = await store.list_threads()

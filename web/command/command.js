@@ -226,12 +226,15 @@ function renderAgents() {
   } else { $("#where").className = "where"; $("#where").textContent = ""; }
   $("#agents").innerHTML = S.order.map((id) => {
     const a = S.agents[id]; const dev = a.target === "edge"; const open = openAgents.has(id);
-    return `<li class="${open ? "open" : ""}"><span class="dot ${a.status}"></span><div><div class="ag-n ag-row" data-ag="${esc(id)}">${esc(a.title)}${a.revision ? `<span class="rev">Revision</span>` : ""}${a.added ? `<span class="rev">Added by review</span>` : ""}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}${a.output ? `<span class="ag-more">${open ? "Hide report" : "Report"}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div>${open && a.output ? `<div class="ag-report md">${md(a.output)}</div>` : ""}</div></li>`;
-  }).join("") || (S.busy ? `<li><span class="dot running"></span><div><div class="ag-n">Incident commander</div><div class="ag-a">Choosing advisers…</div></div></li>` : `<li class="placeholder">Runs after each report.</li>`);
+    const think = a.status === "running" && (a.thought || a.live)
+      ? `<div class="think">${a.live ? `<span class="tk-label">Writing</span>${esc(tail(a.live, 360))}` : `<span class="tk-label">Thinking</span>${esc(tail(a.thought, 360))}`}</div>` : "";
+    return `<li class="${open ? "open" : ""}"><span class="dot ${a.status}"></span><div><div class="ag-n ag-row" data-ag="${esc(id)}">${esc(a.title)}${a.revision ? `<span class="rev">Revision</span>` : ""}${a.added ? `<span class="rev">Added by review</span>` : ""}${a.target ? `<span class="ag-w ${dev ? "device" : "cloud"}">${dev ? "Device" : esc(providerName(a.target))}</span>` : ""}${a.output ? `<span class="ag-more">${open ? "Hide report" : "Report"}</span>` : ""}</div><div class="ag-a ${a.tone || ""}">${esc(a.action)}</div>${think}${open && a.output ? `${a.thought ? `<details class="reasoning"><summary>Reasoning</summary><div>${esc(a.thought)}</div></details>` : ""}<div class="ag-report md">${md(a.output)}</div>` : ""}</div></li>`;
+  }).join("") || (S.busy ? `<li><span class="dot running"></span><div><div class="ag-n">Incident commander</div><div class="ag-a">Choosing advisers…</div>${S.planThought ? `<div class="think"><span class="tk-label">Thinking</span>${esc(tail(S.planThought, 420))}</div>` : ""}</div></li>` : `<li class="placeholder">Runs after each report.</li>`);
   $("#howBtn").hidden = !S.flow;
   renderReview();
 }
 const openAgents = new Set();
+const tail = (t, n) => (t.length > n ? "…" + t.slice(-n) : t).replace(/\s+/g, " ");
 function renderReview() {
   const r = S.review;
   const el = $("#review");
@@ -261,7 +264,9 @@ function renderAlert() {
     ${(p.transport || []).length ? `<table class="tbl" style="margin-top:8px"><thead><tr><th>Station</th><th>Action</th></tr></thead><tbody>${p.transport.map((t) => `<tr><td>${esc(t.name)}</td><td>${esc(t.action)}</td></tr>`).join("")}</tbody></table>` : ""}`;
 }
 function renderBrief() {
-  $("#brief").innerHTML = S.brief ? `<div class="${S.busy ? "cursor" : ""}">${md(S.brief)}</div>` : `<p class="placeholder">${S.busy ? "Advisers are working…" : "Appears after the first report."}</p>`;
+  $("#brief").innerHTML = S.brief ? `<div class="${S.busy ? "cursor" : ""}">${md(S.brief)}</div>`
+    : S.busy && S.synthThought ? `<div class="think"><span class="tk-label">Commander thinking</span>${esc(tail(S.synthThought, 600))}</div>`
+    : `<p class="placeholder">${S.busy ? "Advisers are working…" : "Appears after the first report."}</p>`;
   $("#briefState").textContent = S.busy ? "Updating…" : S.brief ? `Updated ${hhmm(Date.now())}` : "";
 }
 function renderUnits() {
@@ -295,7 +300,7 @@ function describe(r, i) {
 }
 async function analyse() {
   if (S.busy) { S.queued = true; return; }
-  S.busy = true; S.queued = false; S.agents = {}; S.order = []; S.where = null; S.brief = ""; S.review = null; openAgents.clear();
+  S.busy = true; S.queued = false; S.agents = {}; S.order = []; S.where = null; S.brief = ""; S.review = null; S.planThought = ""; S.synthThought = ""; openAgents.clear();
   renderAll();
   try {
     await ensureSession();
@@ -337,8 +342,20 @@ function onEvent(ev) {
     case "hybridedge.step_start":
       if (ev.task_id === "review" && !S.agents.review) { S.agents.review = { title: "Plan review", status: "running", action: "Checking the plan for conflicts and gaps…", target: null }; S.order.push("review"); }
       if (ev.task_id === "plan" || ev.task_id === "synth") S.where = { target: ev.target, reason: ev.reason };
+      if (ev.task_id === "synth") schedule(renderBrief);
       else if (a) { a.status = "running"; a.target = ev.target; if (!a.result) { a.action = "Thinking…"; a.tone = ""; } }
       schedule(renderAgents); break;
+    case "hybridedge.reasoning": {
+      const who = ev.task_id === "plan" ? "plan" : ev.task_id === "synth" ? "synth" : ev.task_id;
+      const ag = S.agents[who];
+      if (ag) ag.thought = ((ag.thought || "") + ev.text).slice(-6000);
+      else if (who === "plan") S.planThought = ((S.planThought || "") + ev.text).slice(-6000);
+      else if (who === "synth") S.synthThought = ((S.synthThought || "") + ev.text).slice(-6000);
+      schedule(renderAgents); break;
+    }
+    case "hybridedge.token":
+      if (a && ev.task_id !== "synth") { a.live = ((a.live || "") + ev.text).slice(-4000); schedule(renderAgents); }
+      break;
     case "hybridedge.plan":
       S.order = ev.plan.tasks.map((t) => t.id);
       for (const t of ev.plan.tasks) S.agents[t.id] = { title: t.title, status: "queued", action: t.task, target: null };

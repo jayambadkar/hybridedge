@@ -180,3 +180,9 @@ button { cursor: pointer; }
 .doc h2 { font-size: 15px; margin: 18px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .doc h2:first-child { margin-top: 0; }
 .modal-card.wide { width: min(920px, 100%); }
+
+.think { margin-top: 6px; padding: 7px 9px; border-radius: 7px; background: #f1f5f9; color: #475569; font: 12px/1.45 ui-monospace, "SF Mono", Menlo, monospace; max-height: 96px; overflow: hidden; }
+.tk-label { display: inline-block; font: 600 10.5px/1 var(--font); text-transform: uppercase; letter-spacing: .05em; color: #1d4ed8; margin-right: 6px; }
+details.reasoning { margin-top: 8px; font-size: 12px; }
+details.reasoning summary { cursor: pointer; color: var(--blue); font-weight: 600; }
+details.reasoning div { margin-top: 6px; padding: 8px 10px; background: #f8fafc; border-radius: 6px; font: 12px/1.5 ui-monospace, Menlo, monospace; color: #475569; white-space: pre-wrap; max-height: 240px; overflow-y: auto; }

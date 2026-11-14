@@ -318,6 +318,9 @@ function renderSettings() {
     <div class="set-sec"><h2>On-device model</h2><p>Used whenever no cloud is reachable.</p>${edgeCard}</div>
     <div class="set-sec"><h2>Scaling and failover</h2><p>How work is spread across providers and how quickly failures are detected.</p>${policy}</div>
     <div class="set-sec"><h2>Test mode</h2><p>Rehearse outages safely. Drills only affect this app; they don't touch the real providers.</p>${drillsHTML(s)}</div>
+    <div class="set-sec"><h2>Clean up</h2><p>Keep the 10% most recently used sessions and delete the rest, with their checkpoints and logs. Running sessions are kept.</p>
+      <div class="card drills"><div class="drill-row"><div class="grow"><div class="n">Delete old sessions</div><div class="d">${state.threads.length} sessions now · keeps the newest ${Math.max(1, Math.ceil(state.threads.length * 0.1))}</div></div>
+      ${state.confirmCleanup ? `<button class="btn-sm" data-cleanup-cancel>Cancel</button><button class="btn-sm danger" data-cleanup-go>Delete ${Math.max(0, state.threads.length - Math.max(1, Math.ceil(state.threads.length * 0.1)))}</button>` : `<button class="btn-sm" data-cleanup ${state.threads.length < 2 ? "disabled" : ""}>Clean up</button>`}</div></div></div>
     <div class="set-sec"><h2>Checkpointing</h2><p>Lets runs survive disconnects, crashes and provider switches.</p>${cp}</div>
     <p class="muted" style="font-size:12px;margin:0">To change these settings, edit <code>.env</code> in the project folder and restart the server. API keys are never sent to the browser.</p>
   </div>`;
@@ -474,7 +477,7 @@ function liveHTML() {
   let html = "";
   if (L.userText) html += `<div class="user">${esc(L.userText)}</div>`;
   const parts = [];
-  if (!L.plan) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>`);
+  if (!L.plan) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>${L.planThought ? `<div class="plan-think">${esc(L.planThought.replace(/\s+/g, " ").slice(-420))}</div>` : ""}`);
   if (L.plan) parts.push(workflowHTML(L.plan, L.agents, !L.final, L.flow));
   if (L.plan && L.plan.tasks.length === 1) {
     const a = Object.values(L.agents)[0];
@@ -484,7 +487,13 @@ function liveHTML() {
       parts.push(`${notes}${tools}${a.output ? answerHTML(a.output, null, { streaming: true }) : `<div class="thinking"><span class="st"><span class="spin"></span></span>Working on ${esc(targetName(a.target))}…</div>`}`);
     }
   }
+  if (L.reviewing && !L.review) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>Reviewing the plan for conflicts and gaps…</div>${L.reviewThought ? `<div class="plan-think">${esc(L.reviewThought.replace(/\s+/g, " ").slice(-360))}</div>` : ""}`);
+  if (L.review && L.review.verdict) {
+    const n = (L.review.issues || []).length, sent = (L.review.revisions || []).length;
+    parts.push(`<div class="review-note"><b>Plan review</b> — ${esc(L.review.verdict)}${n ? ` · ${n} issue${n > 1 ? "s" : ""}${sent ? `, ${sent} sent back` : ""}` : ""}</div>`);
+  }
   if (L.synthNotes) parts.push(L.synthNotes);
+  if (L.final && !L.final.text && L.synthThought) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>Writing the answer…</div><div class="plan-think">${esc(L.synthThought.replace(/\s+/g, " ").slice(-420))}</div>`);
   if (L.final) parts.push(answerHTML(L.final.text, L.final.done ? L.final.meta : null, { streaming: !L.final.done, flow: L.flow }));
   else if (L.synthesizing && !L.final) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>Merging reports on ${esc(targetName(L.synthesizing))}…</div>`);
   if (L.error) parts.push(`<div class="err">${esc(L.error)}</div>`);
@@ -508,6 +517,12 @@ function handleEvent(ev) {
       if (ev.task_id === "plan") L.planning = ev.target;
       else if (ev.task_id === "synth") { L.synthesizing = ev.target; L.final = { text: "", done: false }; }
       else { const a = agentFor(); a.status = "running"; a.target = ev.target; a.output = ""; a.preview = ""; }
+      break;
+    case "reasoning":
+      if (ev.task_id === "plan") { L.planThought = ((L.planThought || "") + ev.text).slice(-2000); }
+      else if (ev.task_id === "synth") { L.synthThought = ((L.synthThought || "") + ev.text).slice(-2000); }
+      else if (ev.task_id === "review") { L.reviewThought = ((L.reviewThought || "") + ev.text).slice(-2000); L.reviewing = true; }
+      else if (L.agents[agentId] && !L.agents[agentId].output) { const a = L.agents[agentId]; a.thought = ((a.thought || "") + ev.text).slice(-2000); a.preview = "Thinking: " + a.thought.replace(/\s+/g, " ").slice(-110); }
       break;
     case "token":
       if (ev.task_id === "synth") { L.final ||= { text: "", done: false }; L.final.text += ev.text; }
@@ -534,6 +549,8 @@ function handleEvent(ev) {
     case "agent_done": { const a = agentFor(); a.status = "done"; a.output = ev.result.output; a.targets = ev.result.targets; break; }
     case "final": L.final = { text: ev.content, done: true, meta: ev.meta }; break;
     case "checkpoint": L.checkpoints += 1; bumpCheckpoints(ev); break;
+    case "review": L.review = ev.review; L.reviewing = false; break;
+    case "revise": for (const t of ev.tasks) { L.plan.tasks.push({ id: t.id, role: t.role, title: `${t.title} · ${t.added ? "added by review" : "revision"}`, task: t.task }); L.agents[t.id] = { id: t.id, title: t.title, task: t.task, status: "queued", steps: 0, tools: [], failovers: [], targets: [], output: "", preview: "" }; } break;
     case "flow":
       L.flow = ev.flow;
       if (ev.flow.task_id) state.flows[ev.flow.task_id] = ev.flow;
@@ -681,7 +698,20 @@ $("#input").addEventListener("keydown", (e) => {
 });
 $("#newThread").addEventListener("click", newThread);
 $("#settingsBtn").addEventListener("click", () => (state.view === "settings" ? closeSettings() : openSettings()));
-$("#settings").addEventListener("click", (e) => {
+$("#settings").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-cleanup]")) { state.confirmCleanup = true; return renderSettings(); }
+  if (e.target.closest("[data-cleanup-cancel]")) { state.confirmCleanup = false; return renderSettings(); }
+  if (e.target.closest("[data-cleanup-go]")) {
+    state.confirmCleanup = false;
+    const r = await api("/api/cleanup", { method: "POST", body: JSON.stringify({ keep_fraction: 0.1 }) });
+    await loadThreads();
+    if (state.threadId && !state.threads.some((t) => t.id === state.threadId)) {
+      state.threadId = null; state.thread = null;
+      try { localStorage.removeItem("he.thread"); } catch {}
+    }
+    toast(`Deleted ${r.deleted} old sessions · kept ${r.kept}`);
+    return renderSettings();
+  }
   const o = e.target.closest("[data-outage]");
   if (o) return setLink({ provider: o.dataset.outage, disabled: o.dataset.on !== "true" });
   const off = e.target.closest("[data-offline]");
