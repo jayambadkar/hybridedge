@@ -87,7 +87,35 @@ POLICE_ROLES: dict[str, dict[str, Any]] = {
     },
 }
 
-ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES}
+MTA_ROLES: dict[str, dict[str, Any]] = {
+    "intelligence": {
+        "title": "Intelligence",
+        "brief": "Works out where the attackers are, where they are heading, how many, what weapons, and which crowded places are at risk. Uses analyse_movement.",
+        "tools": ["analyse_movement", "log_event"],
+    },
+    "firearms": {
+        "title": "Firearms tactics",
+        "brief": "Deploys armed response vehicles (ARVs) to locate, contain and stop the attackers. Uses plan_deployment.",
+        "tools": ["plan_deployment", "analyse_movement"],
+    },
+    "zones": {
+        "title": "Zones and cordons",
+        "brief": "Sets hot, warm and cold zones, the rendezvous point (RVP), casualty collection point (CCP) and forward command post. Uses set_zones.",
+        "tools": ["set_zones"],
+    },
+    "casualties": {
+        "title": "Casualty care",
+        "brief": "Plans casualty care: CCP, ambulance staging at the RVP, warm-zone access and triage priorities.",
+        "tools": ["set_zones", "start_triage", "lookup_protocol"],
+    },
+    "public_warning": {
+        "title": "Public warning",
+        "brief": "Writes the public alert (Run, Hide, Tell) and lists places to evacuate or lock down. Uses analyse_movement.",
+        "tools": ["analyse_movement"],
+    },
+}
+
+ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES, **MTA_ROLES}
 
 COMMON = """Current local time: {now}. You support first responders (police, fire, EMS).
 Be concise and actionable: most important action first, short numbered steps.
@@ -327,6 +355,33 @@ then "Needs / unknowns" if any. Do not repeat yourself; do not add facts that ar
 Current local time: {now}."""
 
 
+MTA_SYNTH = """You are the incident commander for a marauding terrorist attack. Merge the specialist reports into a short COMMANDER'S BRIEF.
+Use exactly these sections, each brief:
+**Situation** — one line: what, where, when.
+**Threat** — attackers, weapons, last seen, direction, places at risk with ETA.
+**Zones** — hot, warm and cold zone sizes; RVP, CCP and forward command post locations.
+**Armed response** — each ARV and its task.
+**Casualty care** — CCP, ambulances, warm-zone access.
+**Public warning** — the alert text to send (Run, Hide, Tell) and places to evacuate or lock down.
+**METHANE** — one line each: Major incident, Exact location, Type, Hazards, Access, Number of casualties, Emergency services.
+Use the tool results exactly (names, distances, ETAs). Do not invent facts. Current local time: {now}."""
+
+PROFILES_EXTRA = {
+    "mta": {
+        "label": "Marauding terrorist attack response",
+        "lead": "incident commander coordinating specialist advisers during a marauding terrorist attack",
+        "roles": MTA_ROLES,
+        "plan_extra": '- ALWAYS include "intelligence" and "zones". Add "firearms", "casualties" and "public_warning" when the budget allows.\n'
+        "- Each update is a new report: re-run the specialists whose advice changes.",
+        "fallback": [
+            {"role": "intelligence", "task": "Analyse the latest reports: location, direction, places at risk."},
+            {"role": "zones", "task": "Set zones, RVP, CCP and command post from the latest reports."},
+        ],
+        "synth": MTA_SYNTH,
+    }
+}
+
+
 PROFILES: dict[str, dict[str, Any]] = {
     "incident": {
         "label": "Multi-agency incident team",
@@ -348,6 +403,7 @@ PROFILES: dict[str, dict[str, Any]] = {
         ],
         "synth": POLICE_SYNTH,
     },
+    **PROFILES_EXTRA,
 }
 
 

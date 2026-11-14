@@ -280,6 +280,25 @@ async def get_session(sid: str):
     }
 
 
+@api.put("/sessions/{sid}/context")
+async def put_context(sid: str, body: dict):
+    """Attach structured data from the calling app (map reports, places, resources...).
+    Agent tools read it directly, so coordinates and records never pass through a prompt."""
+    if not await store.get_thread(sid):
+        raise HTTPException(404, "session not found")
+    if len(json.dumps(body)) > 256_000:
+        raise HTTPException(413, "context too large")
+    await store.set_context(sid, body)
+    return {"ok": True}
+
+
+@api.get("/sessions/{sid}/context")
+async def get_context(sid: str):
+    if not await store.get_thread(sid):
+        raise HTTPException(404, "session not found")
+    return await store.get_context(sid)
+
+
 @api.get("/sessions/{sid}/flow")
 async def session_flow(sid: str):
     """The flow of the session's current (or most recent) task: stages, agent lanes, loops, tiers."""

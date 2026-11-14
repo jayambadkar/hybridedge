@@ -39,7 +39,7 @@ svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width:
 
 html { height: 100%; overflow: hidden; }
 body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; }
-.app { display: grid; grid-template-columns: 252px 1fr auto; flex: 1; min-height: 0; }
+.app { display: grid; grid-template-columns: 252px 1fr auto; grid-template-rows: minmax(0, 1fr); flex: 1; min-height: 0; }
 
 /* ---------------- sidebar */
 .sidebar { border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px; gap: 10px; background: var(--bg); min-width: 0; }
@@ -252,8 +252,9 @@ body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; 
 .panel-b { padding: 2px 16px 14px; }
 .panel-h[aria-expanded="false"] + .panel-b { display: none; }
 @media (max-width: 760px) {
-  .statusbar { padding: 8px 16px; flex-wrap: wrap; row-gap: 0; }
-  .statusbar .sb-detail { white-space: normal; flex-basis: 100%; padding-left: 22px; font-size: 12px; }
+  .statusbar, .drillbar { padding: 0 14px; }
+  .wf-h > span:not(.r) { display: none; }
+  .wf-h .r { display: none; }
 }
 
 .wf-h:hover { background: color-mix(in srgb, var(--sunken) 60%, transparent); }

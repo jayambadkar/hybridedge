@@ -26,19 +26,19 @@
 
   function failText(raw) {
     const r = String(raw || "");
-    if (/link cut/.test(r)) return "the link dropped mid-answer";
-    if (/stalled/.test(r)) return "it stopped responding";
-    if (/HTTP \d+/.test(r)) return `it returned an error (${r.match(/HTTP \d+/)[0]})`;
-    if (/connection/.test(r)) return "the connection failed";
-    return r || "it failed";
+    if (/link cut/.test(r)) return "Link dropped mid-answer";
+    if (/stalled/.test(r)) return "Stopped responding";
+    if (/HTTP \d+/.test(r)) return `Returned an error (${r.match(/HTTP \d+/)[0]})`;
+    if (/connection/.test(r)) return "Connection failed";
+    return r ? r[0].toUpperCase() + r.slice(1) : "Failed";
   }
 
   function eventText(flow, e) {
     if (e.kind === "failover") {
       const [why, next] = String(e.reason || "").split(" — ");
-      return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${Name(flow, e.from)} ${failText(why)}.${next ? ` ${next}.` : ""}`;
+      return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${failText(why)}.${next ? ` ${next}.` : ""}`;
     }
-    if (e.kind === "upgrade") return `${Name(flow, e.from)} → ${name(flow, e.to)}. Cloud available again.`;
+    if (e.kind === "upgrade") return `${Name(flow, e.from)} → ${name(flow, e.to)}`;
     if (e.kind === "switch") return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${e.reason || "Routing changed"}.`;
     return `Started on ${name(flow, e.to)}. ${e.reason || ""}${e.reason ? "." : ""}`;
   }
@@ -60,7 +60,10 @@
     if (!flow) return "";
     const r = flow.routing || [];
     if (!r.length) return "";
-    const switches = r.filter((e) => e.kind !== "start");
+    // Ending up back on the cloud is the normal state: nothing to call out.
+    const switches = r.filter((e) => e.kind !== "start" && e.kind !== "upgrade");
+    const last = r[r.length - 1];
+    if (last.kind === "upgrade") return "";
     if (switches.length) {
       const e = switches[switches.length - 1];
       return `Switched at ${time(e.ts)} — ${eventText(flow, e)}`;

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>Incident Command</title>
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/flow.css" />
+  <link rel="stylesheet" href="/command/command.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23b91c1c'/%3E%3Cpath d='M16 7v12M16 23v2' stroke='%23fff' stroke-width='3.5' stroke-linecap='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="top">
+    <div class="app-name">Incident Command</div>
+    <div class="inc">
+      <span class="tag-ex" id="exTag">Exercise</span>
+      <b id="incTitle">No incident</b>
+      <span class="muted" id="incTime"></span>
+    </div>
+    <div class="top-right">
+      <span class="link" id="link"><i></i><span id="linkText">Checking…</span></span>
+      <span class="clock" id="clock"></span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="map-wrap">
+      <div id="map"></div>
+      <div class="map-tools">
+        <button class="tool-btn" id="addReport">+ Add report</button>
+        <button class="tool-btn" id="nextReport">Next exercise report</button>
+      </div>
+      <div class="map-hint" id="mapHint" hidden>Click the map where the report is from · <button id="cancelAdd">Cancel</button></div>
+    </section>
+
+    <aside class="side" id="side">
+      <section class="start" id="startPanel">
+        <h2>Marauding terrorist attack</h2>
+        <p>Helsinki city centre. Add reports on the map as they come in; the agents update the threat picture, zones, armed response, casualty care and public warning after each one.</p>
+        <div class="res">
+          <label>ARVs available <input type="number" id="arvN" min="0" max="12" value="4" /></label>
+          <label>Ambulances <input type="number" id="ambN" min="0" max="12" value="3" /></label>
+        </div>
+        <button class="primary" id="startEx">Start exercise</button>
+      </section>
+
+      <div id="activePanels" hidden>
+        <section class="card threat" id="threatCard">
+          <div class="threat-grid">
+            <div><span class="k">Attackers</span><b id="tAttackers">–</b></div>
+            <div><span class="k">Weapons</span><b id="tWeapons">–</b></div>
+            <div><span class="k">Casualties</span><b id="tCasualties">–</b></div>
+            <div><span class="k">Heading</span><b id="tHeading">–</b></div>
+          </div>
+          <div class="last" id="tLast"></div>
+          <ul class="risk" id="tRisk"></ul>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>Reports</h3><span class="muted" id="repCount"></span></div>
+          <ol class="reports" id="reports"></ol>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>AI analysis</h3><button class="link-btn" id="howBtn" hidden>How it ran</button></div>
+          <div class="where" id="where"></div>
+          <ul class="agents" id="agents"></ul>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>Commander's brief</h3><span class="muted" id="briefState"></span></div>
+          <div class="brief md" id="brief"></div>
+        </section>
+
+        <section class="card">
+          <div class="card-h"><h3>Units</h3></div>
+          <ul class="units" id="units"></ul>
+        </section>
+
+        <div class="side-foot">
+          <a class="link-btn" id="consoleLink" target="_blank" rel="noopener">Open in HybridEdge console ↗</a>
+          <button class="link-btn danger" id="endEx">End exercise</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <div class="modal-h"><h2 id="modalTitle">How the analysis ran</h2><button class="x" id="modalClose" aria-label="Close">✕</button></div>
+      <div class="modal-b" id="modalBody"></div>
+    </div>
+  </div>
+  <div class="toast" id="toast" hidden></div>
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script src="/flow.js"></script>
+  <script src="/command/command.js"></script>
+</body>
+</html>

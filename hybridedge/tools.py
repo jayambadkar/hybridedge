@@ -376,6 +376,11 @@ TOOL_SPECS: list[dict] = [
 ]
 
 
+from . import mta_tools  # noqa: E402
+
+TOOL_SPECS += mta_tools.TOOL_SPECS
+
+
 async def run_tool(name: str, args_json: str, thread_id: str, tier: str) -> tuple[str, Any]:
     """Execute a tool call. Returns (content_for_model, structured_result)."""
     try:
@@ -398,6 +403,8 @@ async def run_tool(name: str, args_json: str, thread_id: str, tier: str) -> tupl
         elif name == "plan_formation":
             keys = {"officers", "intel_level", "incident_type", "structure"}
             result = plan_formation(**{k: v for k, v in args.items() if k in keys and v is not None})
+        elif name in mta_tools.FUNCS:
+            result = mta_tools.FUNCS[name](await store.get_context(thread_id))
         elif name == "get_incident_log":
             evs = await store.list_events(thread_id)
             result = {"entries": [{"time": time.strftime("%H:%M:%S", time.localtime(e["ts"])), "priority": e["priority"], "text": e["text"]} for e in evs]}

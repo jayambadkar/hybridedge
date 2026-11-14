@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS events (
   priority TEXT NOT NULL, text TEXT NOT NULL, tier TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_thread ON events(thread_id, ts);
+CREATE TABLE IF NOT EXISTS contexts (
+  thread_id TEXT PRIMARY KEY, data TEXT NOT NULL, updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS flows (
   thread_id TEXT NOT NULL, turn_id TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY (thread_id, turn_id)
 );
@@ -153,3 +156,16 @@ async def get_flows(thread_id: str) -> dict[str, dict]:
     async with aiosqlite.connect(DB) as db:
         rows = await db.execute_fetchall("SELECT turn_id, data FROM flows WHERE thread_id=?", (thread_id,))
     return {r[0]: json.loads(r[1]) for r in rows}
+
+
+# -------------------------------------------------------------------- context
+async def set_context(thread_id: str, data: dict) -> None:
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("INSERT OR REPLACE INTO contexts VALUES (?,?,?)", (thread_id, json.dumps(data), time.time()))
+        await db.commit()
+
+
+async def get_context(thread_id: str) -> dict:
+    async with aiosqlite.connect(DB) as db:
+        rows = await db.execute_fetchall("SELECT data FROM contexts WHERE thread_id=?", (thread_id,))
+    return json.loads(rows[0][0]) if rows else {}

@@ -111,7 +111,7 @@ exactly two shapes, decided only by the class of inference provider:
 
 Each step is coloured by where it ran, so a mixed run is visible at a glance.
 
-## Patrol demo (`/patrol/`)
+## Patrol demo (`/command/`)
 
 A mobile police tactical-response app built **only** on `/v1`. It has no knowledge of clouds,
 providers or checkpoints. Pick the incident, intel and officer count, and it streams back:
@@ -121,7 +121,7 @@ providers or checkpoints. Pick the incident, intel and officer count, and it str
 - tactical orders
 
 Intel updates continue the same session via `previous_response_id`. Use **View on console ↗**
-to open the same session in the console. Open it at http://localhost:8787/patrol/.
+to open the same session in the console. Open it at http://localhost:8787/command/.
 
 ## Cloud deployments
 
