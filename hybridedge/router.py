@@ -80,6 +80,8 @@ class Router:
         self.last_check: float | None = None
         self._active = self.active
         self._tasks: list[asyncio.Task] = []
+        # Set when work can move back from the device to a cloud; replaced each time we drop to the device.
+        self.cloud_back = asyncio.Event()
 
     # ------------------------------------------------------------------ status
     def usable(self, s: ProviderState) -> bool:
@@ -91,20 +93,53 @@ class Router:
     def saturated(self, s: ProviderState) -> bool:
         return s.inflight >= s.p.capacity
 
-    def pick(self, exclude: list[str] | tuple = ()) -> str:
-        """Choose where the next LLM step runs.
+    def why_unusable(self, s: ProviderState) -> str:
+        """Plain-language reason a provider can't take work right now."""
+        if not s.p.configured:
+            return f"{s.p.label} is not set up"
+        if not self.net_up:
+            return "this device has no network"
+        if self.offline:
+            return "all clouds are disconnected (drill)"
+        if s.disabled:
+            return f"{s.p.label} outage drill is on"
+        if self._standby_idle(s):
+            return f"{s.p.label} is on standby"
+        return f"{s.p.label} is unreachable ({s.last_error or 'no response'})"
+
+    def pick_reason(self, exclude: list[str] | tuple = ()) -> tuple[str, str]:
+        """Choose where the next LLM step runs, and say why in plain language.
 
         Priority order, but load-aware: the first usable cloud with free capacity wins;
-        if every usable cloud is saturated, the least-loaded one (relative to capacity)
-        takes it; with no usable cloud, the step runs on this device.
+        if every usable cloud is saturated, the least-loaded one takes it; with no
+        usable cloud, the step runs on this device.
         """
+        def skipped(s: ProviderState) -> str:
+            if s.p.name in exclude:
+                return f"{s.p.label} failed this step"
+            if self.usable(s) and self.saturated(s):
+                return f"{s.p.label} is at capacity"
+            return self.why_unusable(s)
+
         clouds = [s for s in self.providers if self.usable(s) and s.p.name not in exclude]
         if not clouds:
-            return EDGE
+            if not self.net_up:
+                return EDGE, "This device has no network"
+            if self.offline:
+                return EDGE, "All clouds are disconnected (drill)"
+            relevant = [s for s in self.providers if s.p.configured] or self.providers
+            return EDGE, "No cloud available: " + "; ".join(skipped(s) for s in relevant)
         for s in clouds:
             if not self.saturated(s):
-                return s.p.name
-        return min(clouds, key=lambda s: s.inflight / max(1, s.p.capacity)).p.name
+                before = self.providers[: self.providers.index(s)]
+                if not before:
+                    return s.p.name, f"{s.p.label} is the primary cloud and healthy"
+                return s.p.name, "; ".join(skipped(b) for b in before)
+        best = min(clouds, key=lambda s: s.inflight / max(1, s.p.capacity))
+        return best.p.name, f"All clouds at capacity; {best.p.label} is least loaded"
+
+    def pick(self, exclude: list[str] | tuple = ()) -> str:
+        return self.pick_reason(exclude)[0]
 
     @property
     def active(self) -> str:
@@ -123,8 +158,13 @@ class Router:
             elif s.cut.is_set():
                 s.cut = asyncio.Event()
         if self.active != self._active:
+            went_to_device = self.active == EDGE
             self._active = self.active
             self.changed_at = time.time()
+            if went_to_device:
+                self.cloud_back = asyncio.Event()
+            else:
+                self.cloud_back.set()  # wakes device steps so they can move back to the cloud
 
     def set_offline(self, offline: bool) -> None:
         self.offline = offline
@@ -217,7 +257,8 @@ class Router:
                 await self.check()
             except Exception:
                 pass  # the monitor must never die
-            await asyncio.sleep(settings.health_interval_s)
+            # While work is on the device, look for a way back to the cloud twice as often.
+            await asyncio.sleep(settings.health_interval_s if self.online else min(1.0, settings.health_interval_s))
 
     def _standby_idle(self, s: ProviderState) -> bool:
         """A standby stays cold while a higher-priority provider is usable and has spare capacity.
@@ -434,12 +475,22 @@ async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emi
     """
     tried: list[str] = []
     failed: list[dict] = []
-    target = router.pick()
+    target, why = router.pick_reason()
     while True:
         step_id = uuid.uuid4().hex
-        emit({"type": "step_start", "step_id": step_id, "target": target, "tier": "edge" if target == EDGE else "cloud", "model": router.label(target), **ctx})
+        emit({"type": "step_start", "step_id": step_id, "target": target, "tier": "edge" if target == EDGE else "cloud", "model": router.label(target), "reason": why, **ctx})
         try:
-            msg = await fn(target, step_id)
+            if target == EDGE:
+                msg = await _run_on_device(fn, step_id)
+                if msg is None:  # a cloud came back mid-step: restart this step there
+                    new, why = router.pick_reason()
+                    if new != EDGE:
+                        emit({"type": "upgrade", "step_id": step_id, "from": EDGE, "to": new, "reason": why, **ctx})
+                        target, tried = new, []
+                        continue
+                    msg = await fn(EDGE, step_id)
+            else:
+                msg = await fn(target, step_id)
         except LinkLost as e:
             router.mark_failure(target, str(e))
             tried.append(target)
@@ -448,13 +499,35 @@ async def run_with_failover(fn: Callable[[str, str], Awaitable[dict]], emit: Emi
                 await asyncio.wait_for(router.check(), timeout=settings.health_timeout_s + 1)
             except Exception:
                 pass
-            target = router.pick(exclude=tried)
-            emit({"type": "failover", "step_id": step_id, "from": failed[-1]["from"], "to": target, "reason": str(e), **ctx})
+            target, why = router.pick_reason(exclude=tried)
+            emit({"type": "failover", "step_id": step_id, "from": failed[-1]["from"], "to": target, "reason": str(e), "to_reason": why, **ctx})
             continue
         if failed:
             msg["meta"]["failover"] = failed
         emit({"type": "step_end", "step_id": step_id, "meta": msg["meta"], "has_tool_calls": bool(msg.get("tool_calls")), **ctx})
         return msg
+
+
+async def _run_on_device(fn: Callable[[str, str], Awaitable[dict]], step_id: str) -> dict | None:
+    """Run a step on the device, but give it up if a cloud becomes available meanwhile
+    (returns None). The step is then re-run in the cloud from the same checkpointed state."""
+    back = router.cloud_back
+    if back.is_set():
+        return None
+    work = asyncio.ensure_future(fn(EDGE, step_id))
+    waiter = asyncio.ensure_future(back.wait())
+    try:
+        done, _ = await asyncio.wait({work, waiter}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        waiter.cancel()
+    if work in done:
+        return work.result()
+    work.cancel()
+    try:
+        await work
+    except BaseException:
+        pass
+    return None
 
 
 router = Router()

@@ -115,6 +115,11 @@ async def _execute(run: Run, inp: Any, config: dict) -> None:
         await run.push({"type": "error", "message": run.error})
     finally:
         await store.touch_thread(run.thread_id)
+        if run.flow.task_id:  # keep the full flow (incl. routing timeline) for this turn
+            try:
+                await store.save_flow(run.thread_id, run.flow.task_id, run.flow.snapshot())
+            except Exception:
+                pass
         for hook in run.on_finish:
             try:
                 await hook(run)
@@ -133,6 +138,20 @@ def start_run(thread_id: str, kind: str, inp: Any, config: dict, source: str = "
     RUNS[thread_id] = run
     run.task = asyncio.create_task(_execute(run, inp, config))
     return run
+
+
+async def attach_flows(thread_id: str, messages: list[dict]) -> None:
+    """Give each assistant message its turn's flow: the saved live flow if we have it,
+    otherwise one rebuilt from the message metadata."""
+    from .flow import flow_from_meta
+
+    saved = await store.get_flows(thread_id)
+    for m in messages:
+        if m.get("role") != "assistant":
+            continue
+        meta = m.get("meta") or {}
+        turn = ((meta.get("workflow") or {}).get("plan") or {}).get("turn_id")
+        m["flow"] = saved.get(turn) or flow_from_meta(meta)
 
 
 async def final_message(thread_id: str) -> dict | None:

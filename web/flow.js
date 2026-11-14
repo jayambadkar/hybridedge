@@ -1,66 +1,133 @@
 "use strict";
 /*
  * HybridFlow — renders the Agents API `flow` object (GET /v1/sessions/{id}/flow or
- * `hybridedge.flow` stream events) as a visual of where a task is in the agent loop.
+ * `hybridedge.flow` stream events): how one task moved through the agent loop and
+ * where (and why) each part ran.
  *
  *   Prompt → Planning → Reasoning (agent ⇄ tool loops) → Checkpointing → Result
  *
- * The graph has exactly two shapes, chosen by the class of inference provider:
- *   cloud (unconstrained): agents fan out in parallel lanes between Plan and Result
- *   edge  (constrained):   agents queue on a single track and run one after another
+ * Two shapes only, decided by the provider class the task was planned on:
+ *   cloud (unconstrained) — agents run in parallel
+ *   edge  (constrained)   — agents queue and run one at a time on this device
  *
- * Usage: el.innerHTML = HybridFlow.render(flow, { compact: false })
- * Theme with CSS variables (see flow.css): --hf-cloud, --hf-edge, --hf-ink, --hf-muted, --hf-line, --hf-bg.
+ *   HybridFlow.render(flow, { compact })  → HTML
+ *   HybridFlow.note(flow)                 → one-line routing note, or "" when it ran normally
+ *   HybridFlow.summary(flow)              → plain-language sentence of where/why it ran
  */
 (function () {
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const TOOL_NAMES = {
-    lookup_protocol: "Protocol lookup", start_triage: "START triage", log_event: "Log event", get_incident_log: "Read log",
+  const TOOL = {
+    lookup_protocol: "Protocol lookup", start_triage: "START triage", log_event: "Log entry", get_incident_log: "Read log",
     assess_threat: "Threat score", plan_formation: "Formation",
   };
+  const time = (ts) => (ts ? new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "");
+  const name = (flow, t) => (!t || t === "edge" ? "this device" : (flow.providers && flow.providers[t]) || t);
+  const Name = (flow, t) => { const n = name(flow, t); return n[0].toUpperCase() + n.slice(1); };
 
-  function stage(s, flow) {
-    const extra = s.id === "checkpointing"
-      ? `<span class="hf-sub">${flow.checkpoints.count ? `${flow.checkpoints.count} saved` : s.status === "done" ? "All saved" : "Every step"}</span>`
-      : s.id === "planning" && flow.planning.tier ? `<span class="hf-sub">${flow.planning.tier === "cloud" ? "Cloud" : "Device"}</span>`
-      : s.id === "result" && flow.result.tier ? `<span class="hf-sub">${flow.result.tier === "cloud" ? "Cloud" : "Device"}</span>`
-      : s.id === "reasoning" && flow.lanes.length ? `<span class="hf-sub">${flow.lanes.length} agent${flow.lanes.length > 1 ? "s" : ""}</span>` : "";
-    return `<li class="hf-stage hf-${s.status}"><span class="hf-dot"></span><span class="hf-lbl">${esc(s.label)}</span>${extra}</li>`;
+  function failText(raw) {
+    const r = String(raw || "");
+    if (/link cut/.test(r)) return "the link dropped mid-answer";
+    if (/stalled/.test(r)) return "it stopped responding";
+    if (/HTTP \d+/.test(r)) return `it returned an error (${r.match(/HTTP \d+/)[0]})`;
+    if (/connection/.test(r)) return "the connection failed";
+    return r || "it failed";
   }
 
-  function step(st) {
-    const cls = `hf-step hf-${st.kind} hf-t-${st.tier} hf-s-${st.status}`;
-    if (st.kind === "tool") return `<span class="${cls}" title="Tool runs on this device">${esc(TOOL_NAMES[st.label] || st.label)}</span>`;
-    const title = st.status === "failed_over" ? "Provider dropped — resumed elsewhere from checkpoint" : st.tier === "cloud" ? "Reasoning on cloud" : "Reasoning on this device";
-    return `<span class="${cls}" title="${title}"></span>`;
+  function eventText(flow, e) {
+    if (e.kind === "failover") {
+      const [why, next] = String(e.reason || "").split(" — ");
+      return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${Name(flow, e.from)} ${failText(why)}.${next ? ` ${next}.` : ""}`;
+    }
+    if (e.kind === "upgrade") return `${Name(flow, e.from)} → ${name(flow, e.to)}. Cloud available again.`;
+    if (e.kind === "switch") return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${e.reason || "Routing changed"}.`;
+    return `Started on ${name(flow, e.to)}. ${e.reason || ""}${e.reason ? "." : ""}`;
   }
 
-  function lane(l, serial, idx) {
-    const steps = l.steps.length ? l.steps.map(step).join('<span class="hf-arrow"></span>') : `<span class="hf-wait">${serial && idx > 0 ? "Waiting for device" : "Queued"}</span>`;
-    const loops = l.loops > 1 ? `<span class="hf-loop" title="Reasoning loops">↻ ${l.loops}</span>` : "";
-    return `<div class="hf-lane hf-l-${l.status}"><div class="hf-lane-h"><span class="hf-lane-t">${esc(l.title)}</span>${loops}</div><div class="hf-steps">${steps}</div></div>`;
+  function summary(flow) {
+    const r = flow.routing || [];
+    if (!r.length) {
+      const t = flow.planning && flow.planning.target;
+      return t ? `Ran on ${name(flow, t)}.` : "";
+    }
+    const first = r[0];
+    if (r.length === 1) return `Ran on ${name(flow, first.to)}. ${first.reason ? `${first.reason}.` : ""}`;
+    const last = r[r.length - 1];
+    return `Started on ${name(flow, first.to)}, finished on ${name(flow, last.to)}.`;
+  }
+
+  /** Short line for the answer footer; empty when the task simply ran on the primary cloud. */
+  function note(flow) {
+    if (!flow) return "";
+    const r = flow.routing || [];
+    if (!r.length) return "";
+    const switches = r.filter((e) => e.kind !== "start");
+    if (switches.length) {
+      const e = switches[switches.length - 1];
+      return `Switched at ${time(e.ts)} — ${eventText(flow, e)}`;
+    }
+    const first = r[0];
+    if (/primary cloud and healthy/i.test(first.reason || "")) return "";
+    return `Ran on ${name(flow, first.to)}: ${first.reason || ""}`;
+  }
+
+  function stages(flow) {
+    return `<ol class="hf-stages">${flow.stages.map((s) => {
+      const extra = s.id === "checkpointing" && flow.checkpoints.count ? ` <span class="hf-count">${flow.checkpoints.count}</span>` : "";
+      return `<li class="hf-${s.status}"><i></i><span>${esc(s.label)}${extra}</span></li>`;
+    }).join("")}</ol>`;
+  }
+
+  function track(steps) {
+    if (!steps.length) return `<span class="hf-wait">Waiting</span>`;
+    const items = steps.length > 9 ? [...steps.slice(0, 4), { kind: "more", n: steps.length - 8 }, ...steps.slice(-4)] : steps;
+    return items.map((st) => {
+      if (st.kind === "more") return `<span class="hf-more">+${st.n}</span>`;
+      if (st.kind === "tool") return `<span class="hf-chip hf-tool ${st.status === "running" ? "hf-live" : ""}">${esc(TOOL[st.label] || st.label)}</span>`;
+      const cls = st.status === "failed_over" || st.status === "moved" ? "hf-dropped" : st.tier === "cloud" ? "hf-c-cloud" : "hf-c-device";
+      const label = st.status === "failed_over" ? "Dropped" : st.status === "moved" ? "Moved" : "Think";
+      return `<span class="hf-chip ${cls} ${st.status === "running" ? "hf-live" : ""}">${label}</span>`;
+    }).join('<span class="hf-sep">›</span>');
+  }
+
+  function where(flow, lane) {
+    const ts = [];
+    for (const s of lane.steps) if (s.kind === "reason" && s.target && ts[ts.length - 1] !== s.target) ts.push(s.target);
+    return ts.map((t) => Name(flow, t)).join(" → ");
+  }
+
+  function agents(flow) {
+    if (!flow.lanes.length) return "";
+    const serial = flow.layout === "serial";
+    const head = serial
+      ? `<div class="hf-shape"><b>Queued</b> · ${flow.lanes.length} agent${flow.lanes.length > 1 ? "s" : ""}, one at a time on this device</div>`
+      : `<div class="hf-shape"><b>Parallel</b> · ${flow.lanes.length} agent${flow.lanes.length > 1 ? "s" : ""} at once</div>`;
+    const rows = flow.lanes.map((l, i) => `<div class="hf-agent hf-a-${l.status}">
+        <div class="hf-aname">${serial ? `<span class="hf-num">${i + 1}</span>` : ""}${esc(l.title)}</div>
+        <div class="hf-track">${track(l.steps)}</div>
+        <div class="hf-awhere">${esc(where(flow, l))}</div>
+      </div>`).join("");
+    return `${head}<div class="hf-agents ${serial ? "hf-serial" : "hf-parallel"}">${rows}</div>`;
+  }
+
+  function timeline(flow) {
+    const r = flow.routing || [];
+    if (!r.length) return "";
+    return `<ol class="hf-timeline">${r.map((e) => `<li class="hf-e-${e.kind} ${e.to === "edge" ? "hf-to-edge" : "hf-to-cloud"}">
+        <time>${time(e.ts)}</time><span>${esc(eventText(flow, e))}${e.agents && e.agents.length > 1 ? ` <em>(${e.agents.length} agents)</em>` : ""}</span></li>`).join("")}</ol>`;
   }
 
   function render(flow, opts = {}) {
     if (!flow) return "";
     const cap = flow.capability;
-    const serial = flow.layout === "serial";
-    const lanes = flow.lanes.map((l, i) => lane(l, serial, i)).join(serial ? '<span class="hf-next"></span>' : "");
-    const failovers = flow.failovers && flow.failovers.length
-      ? `<div class="hf-note">↪ ${flow.failovers.length === 1 ? "1 step" : `${flow.failovers.length} steps`} switched provider and resumed from a checkpoint</div>` : "";
-    return `<div class="hf hf-${flow.mode} ${opts.compact ? "hf-compact" : ""}">
-      <div class="hf-cap"><span class="hf-badge">${esc(cap.label)}</span><span class="hf-capd">${esc(cap.model)} · ${esc(cap.summary)}</span></div>
-      <ol class="hf-stages">${flow.stages.map((s) => stage(s, flow)).join("")}</ol>
-      ${flow.lanes.length ? `<div class="hf-body ${serial ? "hf-serial" : "hf-parallel"}">
-        <div class="hf-node">Plan</div>
-        <div class="hf-lanes">${lanes}</div>
-        <div class="hf-node">Result</div>
-      </div>` : ""}
-      ${serial && flow.lanes.length ? `<div class="hf-note hf-why">Constrained: a small on-device model runs the agents one at a time with less context, so plans are narrower and slower.</div>` : ""}
-      ${failovers}
-      <div class="hf-legend"><span><i class="hf-k hf-t-cloud"></i>Cloud reasoning</span><span><i class="hf-k hf-t-edge"></i>Device reasoning</span><span><i class="hf-k hf-tool"></i>Tool (on device)</span></div>
+    const sum = summary(flow);
+    const showTimeline = !opts.compact || (flow.routing || []).length > 1;
+    return `<div class="hf hf-${flow.mode}${opts.compact ? " hf-compact" : ""}">
+      <div class="hf-cap"><span class="hf-badge">${esc(cap.label)}</span><span>${esc(cap.model)} · up to ${cap.max_agents} agents${cap.parallel && flow.mode === "cloud" ? " in parallel" : ", one at a time"} · ${esc(cap.context)} context</span></div>
+      ${sum ? `<p class="hf-summary">${esc(sum)}</p>` : ""}
+      <section><h4>Agent loop</h4>${stages(flow)}${agents(flow)}</section>
+      ${showTimeline && (flow.routing || []).length ? `<section><h4>Where it ran</h4>${timeline(flow)}</section>` : ""}
     </div>`;
   }
 
-  window.HybridFlow = { render };
+  window.HybridFlow = { render, summary, note };
 })();

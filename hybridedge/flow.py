@@ -65,6 +65,20 @@ class FlowBuilder:
         self.failovers: list[dict] = []
         self.status = "running"
         self.task_id: str | None = None
+        self.started_at = time.time()
+        self.routing: list[dict] = []  # when and why work ran where (start + every switch)
+        self._agent_target: dict[str, str] = {}
+
+    def _route(self, ev: dict, kind: str, frm: str | None, to: str, reason: str | None) -> None:
+        """Record a routing decision; merge simultaneous identical switches (parallel agents)."""
+        who = ev.get("agent") or "lead"
+        ts = ev.get("ts") or time.time()
+        last = self.routing[-1] if self.routing else None
+        if last and last["kind"] == kind and last["from"] == frm and last["to"] == to and ts - last["ts"] < 5:
+            if who not in last["agents"]:
+                last["agents"].append(who)
+            return
+        self.routing.append({"ts": ts, "kind": kind, "from": frm, "to": to, "reason": reason, "agents": [who]})
 
     # --------------------------------------------------------------- folding
     def apply(self, ev: dict) -> bool:
@@ -74,7 +88,18 @@ class FlowBuilder:
         if t == "token" or t == "reasoning":
             return False
         if t == "step_start":
-            self.mode = _tier(ev.get("target"))
+            if tid == "plan" or self.planning_target is None:
+                self.mode = _tier(ev.get("target"))  # shape = capability the task was planned under
+            who = tid or "lead"
+            tgt = ev.get("target")
+            prev = self._agent_target.get(who)
+            if not self.routing:
+                self._route(ev, "start", None, tgt, ev.get("reason"))
+            elif prev is not None and prev != tgt:
+                self._route(ev, "switch", prev, tgt, ev.get("reason"))
+            elif prev is None and tgt != self.routing[-1]["to"]:
+                self._route(ev, "switch", self.routing[-1]["to"], tgt, ev.get("reason"))
+            self._agent_target[who] = tgt
             if tid == "plan":
                 self.planning_target = ev.get("target")
             elif tid == "synth":
@@ -113,10 +138,21 @@ class FlowBuilder:
             return True
         if t == "failover":
             self.failovers.append({"from": ev.get("from"), "to": ev.get("to"), "agent": ev.get("agent"), "reason": ev.get("reason")})
+            self._route(ev, "failover", ev.get("from"), ev.get("to"), f"{ev.get('reason')} — {ev.get('to_reason') or ''}".strip(" —"))
+            self._agent_target[tid or "lead"] = ev.get("to")
             if tid in self.lanes:
                 for st in reversed(self.lanes[tid]["steps"]):
                     if st["kind"] == "reason" and st["status"] == "running":
                         st["status"] = "failed_over"
+                        break
+            return True
+        if t == "upgrade":
+            self._route(ev, "upgrade", ev.get("from"), ev.get("to"), ev.get("reason"))
+            self._agent_target[tid or "lead"] = ev.get("to")
+            if tid in self.lanes:
+                for st in reversed(self.lanes[tid]["steps"]):
+                    if st["kind"] == "reason" and st["status"] == "running":
+                        st["status"] = "moved"
                         break
             return True
         if t == "agent_done" and tid in self.lanes:
@@ -156,10 +192,19 @@ class FlowBuilder:
             last_checkpoint=self.last_checkpoint,
             failovers=self.failovers,
             task_id=self.task_id,
+            routing=self.routing,
+            started_at=self.started_at,
         )
 
 
-def _shape(*, mode, status, stage_status, lanes, planning_target, result_target, checkpoints, last_checkpoint, failovers, task_id) -> dict:
+def _name(target: str | None) -> str:
+    if not target or target == "edge":
+        return "This device"
+    p = next((p for p in settings.providers if p.name == target), None)
+    return p.label if p else target
+
+
+def _shape(*, mode, status, stage_status, lanes, planning_target, result_target, checkpoints, last_checkpoint, failovers, task_id, routing=None, started_at=None) -> dict:
     cap = capability(mode)
     lanes = [dict(lane, loops=sum(1 for s in lane["steps"] if s["kind"] == "reason")) for lane in lanes]
     return {
@@ -175,6 +220,9 @@ def _shape(*, mode, status, stage_status, lanes, planning_target, result_target,
         "checkpoints": {"count": checkpoints, "last_at": last_checkpoint},
         "failovers": failovers,
         "layout": "parallel" if cap["parallel"] and mode == "cloud" else "serial",
+        "started_at": started_at,
+        "routing": [dict(r, from_name=_name(r["from"]) if r["from"] else None, to_name=_name(r["to"])) for r in (routing or [])],
+        "providers": {"edge": "This device", **{p.name: p.label for p in settings.providers}},
     }
 
 

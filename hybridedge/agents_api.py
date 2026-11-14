@@ -33,7 +33,7 @@ from . import store
 from .flow import capability, flow_from_meta
 from .graph import ALL_ROLES, PROFILES
 from .router import router as model_router
-from .runtime import RUNS, Run, RunBusy, cfg, final_message, graph, start_run
+from .runtime import RUNS, Run, RunBusy, attach_flows, cfg, final_message, graph, start_run
 
 api = APIRouter(prefix="/v1", tags=["agents"])
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
@@ -262,7 +262,8 @@ async def get_session(sid: str):
     if not t:
         raise HTTPException(404, "session not found")
     snap = await graph().aget_state(cfg(sid))
-    msgs = (snap.values or {}).get("messages", []) if snap else []
+    msgs = [dict(m) for m in ((snap.values or {}).get("messages", []) if snap else [])]
+    await attach_flows(sid, msgs)
     return {
         **_session_obj(t),
         "messages": [
@@ -270,7 +271,7 @@ async def get_session(sid: str):
                 "role": m["role"],
                 "content": m.get("content", ""),
                 "hybridedge": _summary(m.get("meta") or {}) if m["role"] == "assistant" else None,
-                "flow": flow_from_meta(m.get("meta") or {}) if m["role"] == "assistant" else None,
+                "flow": m.get("flow") if m["role"] == "assistant" else None,
             }
             for m in msgs
             if m["role"] in ("user", "assistant")
@@ -287,8 +288,9 @@ async def session_flow(sid: str):
     run = RUNS.get(sid)
     if run is not None:
         return run.flow.snapshot()
-    msg = await final_message(sid)
-    flow = flow_from_meta((msg or {}).get("meta") or {})
+    msg = dict(await final_message(sid) or {})
+    await attach_flows(sid, [msg] if msg else [])
+    flow = msg.get("flow")
     if flow is None:
         raise HTTPException(404, "no task has run in this session yet")
     return flow

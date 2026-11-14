@@ -18,6 +18,8 @@ const state = {
   thread: null, // server view: {thread, messages, checkpoints, events, running, next}
   live: null, // in-flight turn
   sending: false,
+  flows: {}, // turn_id -> flow
+  modal: null, // {kind: "flow", id} | {kind: "connection"}
   view: "chat", // "chat" | "settings"
   settings: null,
   prevActive: null,
@@ -125,35 +127,83 @@ function renderStatus() {
   $("#send").disabled = state.sending || !$("#input").value.trim();
 }
 
-function renderStatusBar(s) {
-  const bar = $("#statusBar");
-  let cls, title, detail;
-  if (!s) {
-    cls = "sb-down"; title = "Edge server unreachable"; detail = "The app can't reach the HybridEdge server on this device. Restart it with ./start.sh.";
-  } else if (s.active !== "edge") {
+function connectionInfo(s) {
+  if (!s) return { cls: "sb-down", title: "Edge server unreachable", why: "The app can't reach the HybridEdge server on this device. Restart it with ./start.sh." };
+  if (s.active !== "edge") {
     const p = s.providers.find((x) => x.name === s.active);
-    cls = "sb-online"; title = "Connected";
-    detail = `Cloud agents on ${p.label} · ${p.hardware}${p.latency_ms != null ? ` · ${p.latency_ms} ms` : ""} · Up to ${s.budget.max_agents} agents in parallel`;
-  } else if (!s.edge.ok) {
-    cls = "sb-down"; title = "No model available"; detail = "No cloud is reachable and the on-device model (Ollama) isn't running.";
-  } else if (!s.network.up) {
-    cls = "sb-nonet"; title = "Offline — this device has no network";
-    detail = `Running entirely on this device (${s.edge.model}) · Up to ${s.budget.max_agents} agents · Everything is checkpointed locally and reconnects automatically`;
-  } else if (s.offline) {
-    cls = "sb-edge"; title = "Offline — clouds disconnected (drill)";
-    detail = `Running on this device (${s.edge.model}) · End the drill in Settings → Test mode to reconnect`;
-  } else if (s.reconnecting) {
-    cls = "sb-reconnect"; title = "Reconnecting…";
-    detail = "Network is back — checking cloud providers. Work continues on this device in the meantime.";
-  } else {
-    cls = "sb-edge"; title = "Offline — no cloud reachable";
-    detail = `Network is up but no cloud provider responded · Running on this device (${s.edge.model}) · Up to ${s.budget.max_agents} agents`;
+    return { cls: "sb-online", title: "Connected", short: `${p.label}`, why: `${p.label} is ${s.providers[0].name === p.name ? "the primary cloud and healthy" : "taking work because higher-priority clouds aren't available"}.` };
   }
-  bar.className = `statusbar ${cls}`;
+  if (!s.edge.ok) return { cls: "sb-down", title: "No model available", why: "No cloud is reachable and the on-device model (Ollama) isn't running." };
+  if (!s.network.up) return { cls: "sb-nonet", title: "Offline", short: "No network", why: "This device has no network, so agents run on the on-device model. It checks for a connection twice a second and moves work back to the cloud the moment one is available — even part-way through a step." };
+  if (s.offline) return { cls: "sb-edge", title: "Offline", short: "Clouds disconnected", why: "All cloud links are cut by an active drill, so agents run on this device. End the drill to reconnect." };
+  if (s.reconnecting) return { cls: "sb-reconnect", title: "Reconnecting…", why: "The network is back; checking cloud providers. Work continues on this device meanwhile." };
+  const reasons = s.providers.filter((p) => p.configured).map((p) => `${p.label}: ${p.disabled ? "outage drill on" : p.last_error || "unreachable"}`);
+  return { cls: "sb-edge", title: "Offline", short: "No cloud reachable", why: `No cloud provider is responding (${reasons.join("; ")}). Agents run on this device. Clouds are re-checked every second, and work moves back the moment one answers — even part-way through a step.` };
+}
+
+function renderDrillBar(s) {
+  const drills = [];
+  if (s && s.offline) drills.push("all clouds disconnected");
+  for (const p of (s && s.providers) || []) if (p.disabled) drills.push(`${p.label} outage`);
+  const bar = $("#drillBar");
+  bar.hidden = !drills.length;
+  if (drills.length) $("#drillText").textContent = drills.map((d) => d[0].toUpperCase() + d.slice(1)).join(" · ");
+}
+
+function renderStatusBar(s) {
+  renderDrillBar(s);
+  const bar = $("#statusBar");
+  const c = connectionInfo(s);
+  bar.className = `statusbar ${c.cls}`;
+  bar.querySelector(".sb-title").textContent = c.title;
+  bar.querySelector(".sb-detail").textContent = c.short ? `· ${c.short}` : "";
   requestAnimationFrame(() => document.documentElement.style.setProperty("--sb-h", bar.offsetHeight + "px"));
-  bar.querySelector(".sb-title").textContent = title;
-  bar.querySelector(".sb-detail").textContent = detail;
   document.title = s && s.active !== "edge" ? "HybridEdge" : "HybridEdge · Offline";
+  if (state.modal && state.modal.kind === "connection") renderModal();
+}
+
+/* -------------------------------------------------------------------- modal */
+function openModal(m) {
+  state.modal = m;
+  $("#modal").hidden = false;
+  renderModal();
+  $("#modalClose").focus();
+}
+function closeModal() {
+  state.modal = null;
+  $("#modal").hidden = true;
+}
+function renderModal() {
+  const m = state.modal;
+  if (!m) return;
+  const s = state.status;
+  if (m.kind === "flow") {
+    const flow = state.flows[m.id];
+    $("#modalTitle").textContent = "How this task ran";
+    $("#modalBody").innerHTML = flow ? HybridFlow.render(flow) : `<p class="muted">No flow recorded for this task.</p>`;
+    return;
+  }
+  const c = connectionInfo(s);
+  $("#modalTitle").textContent = "Connection";
+  if (!s) { $("#modalBody").innerHTML = `<p>${esc(c.why)}</p>`; return; }
+  const rows = s.providers.map((p) => {
+    const [cls, text] = providerState(p, s);
+    return `<div class="prov"><div class="grow"><div class="n">${esc(p.label)}</div><div class="d">${esc(p.hardware)} · ${esc(p.model)}</div></div><span class="pill ${cls}">${esc(text)}</span></div>`;
+  }).join("");
+  const cap = s.capability || {};
+  $("#modalBody").innerHTML = `
+    <div class="conn-status ${c.cls}"><span class="sb-dot"></span><b>${esc(c.title)}</b></div>
+    <p class="conn-why">${esc(c.why)}</p>
+    ${s.offline || s.providers.some((p) => p.disabled) ? `<p class="conn-drill"><span class="drill-tag">Drill</span> Simulated</p>` : ""}
+    <dl class="kv conn-kv">
+      <dt>Agents run on</dt><dd>${esc(s.active === "edge" ? `This device · ${s.edge.model}` : `${targetName(s.active)} · ${cap.model || ""}`)}</dd>
+      <dt>Capacity</dt><dd>${esc(cap.summary || "")}</dd>
+      <dt>Network</dt><dd>${s.network.up ? "Connected" : "No network on this device"}</dd>
+    </dl>
+    <h4 class="conn-h">Failover order</h4>
+    ${rows}
+    <div class="prov"><div class="grow"><div class="n">This device</div><div class="d">${esc(s.edge.model)}</div></div><span class="pill ${s.edge.ok ? (s.active === "edge" ? "warn" : "idle") : "bad"}">${s.edge.ok ? (s.active === "edge" ? "In use" : "Ready") : "Not running"}</span></div>
+    <div class="conn-actions"><button class="btn-sm" data-open-settings>Settings and test mode</button></div>`;
 }
 
 function providerState(p, s) {
@@ -350,27 +400,32 @@ function agentHTML(a, expanded) {
 
 const expanded = new Set();
 const collapsedWf = new Set();
-const noteHTML = (f) => f.generic
-  ? `<div class="note">↪ Switched provider mid-task — resumed from checkpoint</div>`
-  : `<div class="note">↪ ${esc(targetName(f.from))} dropped (${esc(f.reason)}) — resumed on ${esc(targetName(f.to))} from checkpoint</div>`;
+const noteHTML = (f) => f.upgrade
+  ? `<div class="note note-up">↩ Back on ${esc(targetName(f.to))}</div>`
+  : f.generic
+  ? `<div class="note">↪ Switched provider</div>`
+  : `<div class="note">↪ ${esc(targetName(f.from))} dropped → ${esc(targetName(f.to))}</div>`;
 
 function workflowHTML(plan, agents, running, flow) {
   if (!plan) return "";
   const n = plan.tasks.length;
   const collapsed = collapsedWf.has(plan.turn_id);
-  const head = `<button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : flow && flow.layout === "serial" ? `${n} agents, one at a time` : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>`;
-  const flowHTML = flow && window.HybridFlow ? `<div class="wf-flow">${HybridFlow.render(flow)}</div>` : "";
-  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${flowHTML}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
+  if (flow) state.flows[plan.turn_id] = flow;
+  const head = `<div class="wf-head"><button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : flow && flow.layout === "serial" ? `${n} agents, one at a time` : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>${flow ? `<button class="wf-flowbtn" data-flow="${esc(plan.turn_id)}">How it ran</button>` : ""}</div>`;
+  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
 }
 
-function answerHTML(text, meta, { streaming = false, isLast = false } = {}) {
+function answerHTML(text, meta, { streaming = false, isLast = false, flow = null, flowLink = false } = {}) {
   const degraded = meta?.target === "edge" || (meta?.workflow?.results || []).some((r) => r.targets.includes("edge"));
   const fail = meta?.failover?.length || (meta?.workflow?.results || []).some((r) => r.failover);
   const bits = [];
   if (meta?.target) bits.push(tag(meta.target));
   if (meta?.model) bits.push(`<span>${esc(meta.model)}</span>`);
   if (meta?.ms) bits.push(`<span>${(meta.ms / 1000).toFixed(1)}s</span>`);
-  if (fail) bits.push(`<span style="color:var(--edge)">Switched provider mid-run</span>`);
+  const routeNote = flow && window.HybridFlow ? HybridFlow.note(flow) : "";
+  if (routeNote) bits.push(`<span class="route-note">${esc(routeNote)}</span>`);
+  else if (fail) bits.push(`<span class="route-note">Switched provider mid-run</span>`);
+  if (flowLink && flow) bits.push(`<button class="link-btn" data-flow="${esc(flow.task_id || "")}">How it ran</button>`);
   if (isLast && degraded && state.status?.active && state.status.active !== "edge" && !state.sending)
     bits.push(`<button class="btn-sm primary" data-rerun>${ICON.redo}Re-run on ${esc(targetName(state.status.active))}</button>`);
   return `<div class="answer ${degraded ? "degraded" : ""}"><div class="md ${streaming ? "cursor" : ""}">${md(text)}</div>${bits.length && !streaming ? `<div class="answer-meta">${bits.join("")}</div>` : ""}</div>`;
@@ -398,8 +453,9 @@ function renderFeed(scroll = false) {
       if (m.role === "user") parts.push(`<div class="user">${esc(m.content)}</div>`);
       else if (m.role === "assistant") {
         const wf = m.meta?.workflow;
-        const showCard = wf && (wf.plan.tasks.length > 1 || m.flow);
-        parts.push(`<div class="turn">${showCard ? workflowHTML(wf.plan, agentsFromResults(wf), false, m.flow) : ""}${answerHTML(m.content, m.meta, { isLast: i === lastAssistant && !state.live })}</div>`);
+        const showCard = wf && wf.plan.tasks.length > 1;
+        if (m.flow && m.flow.task_id) state.flows[m.flow.task_id] = m.flow;
+        parts.push(`<div class="turn">${showCard ? workflowHTML(wf.plan, agentsFromResults(wf), false, m.flow) : ""}${answerHTML(m.content, m.meta, { isLast: i === lastAssistant && !state.live, flow: m.flow, flowLink: !showCard })}</div>`);
       }
     });
     if (state.live) parts.push(liveHTML());
@@ -416,9 +472,7 @@ function liveHTML() {
   let html = "";
   if (L.userText) html += `<div class="user">${esc(L.userText)}</div>`;
   const parts = [];
-  if (!L.plan) parts.push(L.flow && window.HybridFlow
-    ? `<div class="wf"><div class="wf-flow" style="border-bottom:0">${HybridFlow.render(L.flow)}</div></div>`
-    : `<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>`);
+  if (!L.plan) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>`);
   if (L.plan) parts.push(workflowHTML(L.plan, L.agents, !L.final, L.flow));
   if (L.plan && L.plan.tasks.length === 1) {
     const a = Object.values(L.agents)[0];
@@ -429,7 +483,7 @@ function liveHTML() {
     }
   }
   if (L.synthNotes) parts.push(L.synthNotes);
-  if (L.final) parts.push(answerHTML(L.final.text, L.final.done ? L.final.meta : null, { streaming: !L.final.done }));
+  if (L.final) parts.push(answerHTML(L.final.text, L.final.done ? L.final.meta : null, { streaming: !L.final.done, flow: L.flow }));
   else if (L.synthesizing && !L.final) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>Merging reports on ${esc(targetName(L.synthesizing))}…</div>`);
   if (L.error) parts.push(`<div class="err">${esc(L.error)}</div>`);
   return html + `<div class="turn">${parts.join("")}</div>`;
@@ -458,10 +512,14 @@ function handleEvent(ev) {
       else if (L.agents[agentId]) { const a = L.agents[agentId]; a.output += ev.text; a.preview = a.output.replace(/\s+/g, " ").slice(-90); }
       break;
     case "failover": {
-      if (ev.task_id === "synth") { L.final = null; L.synthNotes = `<div class="note">↪ ${esc(targetName(ev.from))} dropped mid-answer — continuing on ${esc(targetName(ev.to))} from checkpoint</div>`; }
+      if (ev.task_id === "synth") { L.final = null; L.synthNotes = `<div class="note">↪ ${esc(targetName(ev.from))} dropped → ${esc(targetName(ev.to))}</div>`; }
       else if (ev.task_id !== "plan") agentFor().failovers.push({ from: ev.from, to: ev.to, reason: ev.reason });
       break;
     }
+    case "upgrade":
+      if (ev.task_id === "synth") { L.final = null; L.synthNotes = `<div class="note note-up">↩ Back on ${esc(targetName(ev.to))}</div>`; }
+      else if (ev.task_id !== "plan") agentFor().failovers.push({ upgrade: true, to: ev.to });
+      break;
     case "step_end":
       if (ev.task_id !== "plan" && ev.task_id !== "synth") { const a = agentFor(); a.steps += 1; a.targets.push(ev.meta.target); }
       if (ev.task_id === "synth" && L.final) { L.final.done = true; L.final.meta = ev.meta; }
@@ -474,7 +532,11 @@ function handleEvent(ev) {
     case "agent_done": { const a = agentFor(); a.status = "done"; a.output = ev.result.output; a.targets = ev.result.targets; break; }
     case "final": L.final = { text: ev.content, done: true, meta: ev.meta }; break;
     case "checkpoint": L.checkpoints += 1; bumpCheckpoints(ev); break;
-    case "flow": L.flow = ev.flow; break;
+    case "flow":
+      L.flow = ev.flow;
+      if (ev.flow.task_id) state.flows[ev.flow.task_id] = ev.flow;
+      if (state.modal && state.modal.kind === "flow") renderModal();
+      break;
     case "error": L.error = ev.message; break;
   }
   schedule();
@@ -631,7 +693,23 @@ $("#threads").addEventListener("click", (e) => {
   const b = e.target.closest("[data-thread]");
   if (b && !state.sending) openThread(b.dataset.thread);
 });
+$("#statusBar").addEventListener("click", () => openModal({ kind: "connection" }));
+$("#drillEnd").addEventListener("click", async () => {
+  const s = state.status;
+  if (!s) return;
+  if (s.offline) await setLink({ offline: false });
+  for (const p of s.providers) if (p.disabled) await setLink({ provider: p.name, disabled: false });
+});
+$("#statusBar").addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openModal({ kind: "connection" }); } });
+$("#modalClose").addEventListener("click", closeModal);
+$("#modal").addEventListener("click", (e) => {
+  if (e.target === $("#modal")) return closeModal();
+  if (e.target.closest("[data-open-settings]")) { closeModal(); openSettings(); }
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && state.modal) closeModal(); });
 $("#feed").addEventListener("click", (e) => {
+  const fb = e.target.closest("[data-flow]");
+  if (fb) return openModal({ kind: "flow", id: fb.dataset.flow });
   const chip = e.target.closest("[data-chip]");
   if (chip) return send(chip.dataset.chip);
   const wf = e.target.closest("[data-wf]");

@@ -3,100 +3,121 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0a1120" />
-  <title>Patrol · Tactical Assist</title>
+  <meta name="theme-color" content="#ffffff" />
+  <title>Patrol MDT</title>
   <link rel="stylesheet" href="/flow.css" />
   <link rel="stylesheet" href="/patrol/patrol.css" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a1120'/%3E%3Cpath d='M16 5l9 3v7c0 6-4 10-9 12-5-2-9-6-9-12V8z' fill='%233b82f6'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231d4ed8'/%3E%3Cpath d='M16 6l8 3v6c0 5-3.5 8.5-8 10.5C11.5 23.5 8 20 8 15V9z' fill='%23fff'/%3E%3C/svg%3E" />
 </head>
 <body>
-  <div class="phone">
-    <header class="top">
-      <div class="brand">
-        <svg viewBox="0 0 24 24" class="shield"><path d="M12 2.5l7.5 2.6v5.6c0 4.9-3.2 8.3-7.5 10.3-4.3-2-7.5-5.4-7.5-10.3V5.1z" /></svg>
-        <div><b>PATROL</b><span>Tactical Assist</span></div>
+  <header class="top">
+    <div class="brand">
+      <span class="logo"><svg viewBox="0 0 24 24"><path d="M12 3l7 2.6v5.2c0 4.6-3 7.8-7 9.7-4-1.9-7-5.1-7-9.7V5.6z" /></svg></span>
+      <div><b>Patrol MDT</b><span>Unit 7-Alpha · Tactical support</span></div>
+    </div>
+    <div class="top-right">
+      <span class="link" id="link"><i></i><span id="linkText">Checking link…</span></span>
+      <span class="clock" id="clock"></span>
+    </div>
+  </header>
+
+  <div class="incident none" id="incident">
+    <span class="inc-lvl" id="incLvl">—</span>
+    <div class="inc-main">
+      <div class="inc-title" id="incTitle">No active incident</div>
+      <div class="inc-sub" id="incSub">Create an incident to get a tactical plan.</div>
+    </div>
+    <div class="inc-meta" id="incMeta"></div>
+  </div>
+
+  <main class="grid">
+    <!-- Map -->
+    <section class="panel map-panel">
+      <div class="panel-h"><h2>Live map</h2></div>
+      <div class="map" id="map"></div>
+      <div class="legend">
+        <span><i class="lg target"></i>Subject</span>
+        <span><i class="lg inner"></i>Inner cordon</span>
+        <span><i class="lg outer"></i>Outer cordon</span>
+        <span><i class="lg enroute"></i>En route</span>
+        <span><i class="lg inpos"></i>In position</span>
+        <span><i class="lg cp"></i>Command post</span>
+        <span><i class="lg ems"></i>EMS staging</span>
       </div>
-      <div class="unit">Unit 7-Alpha</div>
-    </header>
-    <div class="link" id="link"><span class="ldot"></span><span id="linkText">Checking link…</span></div>
+    </section>
 
-    <!-- Brief -->
-    <main id="brief" class="screen">
-      <section class="card">
-        <h2>Incident</h2>
-        <div class="chips" id="types">
-          <button class="chip on" data-type="Barricaded suspect">Barricaded suspect</button>
-          <button class="chip" data-type="Armed robbery in progress">Armed robbery</button>
-          <button class="chip" data-type="Hostage situation">Hostage situation</button>
-          <button class="chip" data-type="Public disorder">Public disorder</button>
-          <button class="chip" data-type="High-risk vehicle stop">High-risk vehicle stop</button>
-          <button class="chip" data-type="Missing vulnerable person">Missing person</button>
-        </div>
-        <label class="field"><span>Location</span><input id="location" value="14 Harbour Rd, 2-storey house" /></label>
-      </section>
-
-      <section class="card">
-        <h2>Intel</h2>
-        <div class="row"><span class="rl">Weapon</span>
-          <div class="seg" id="weapon">
-            <button data-v="none">None</button><button data-v="edged">Edged</button><button data-v="firearm" class="on">Firearm</button><button data-v="unknown">Unknown</button>
+    <div class="side">
+      <!-- New incident -->
+      <section class="panel" id="newPanel">
+        <div class="panel-h"><h2>New incident</h2></div>
+        <div class="form">
+          <label>Type</label>
+          <div class="chips" id="types">
+            <button data-type="Barricaded suspect" class="on">Barricaded suspect</button>
+            <button data-type="Armed robbery in progress">Armed robbery</button>
+            <button data-type="Hostage situation">Hostage situation</button>
+            <button data-type="Public disorder">Public disorder</button>
+            <button data-type="High-risk vehicle stop">Vehicle stop</button>
           </div>
-        </div>
-        <div class="toggles">
-          <button class="tog on" data-k="barricaded">Barricaded</button>
-          <button class="tog" data-k="hostages">Hostages</button>
-          <button class="tog on" data-k="violent">Violent history</button>
-          <button class="tog" data-k="building">Inside building</button>
-        </div>
-        <div class="row"><span class="rl">Subjects</span><div class="step"><button data-step="subjects" data-d="-1">−</button><b id="subjects">1</b><button data-step="subjects" data-d="1">+</button></div></div>
-        <div class="row"><span class="rl">Officers available</span><div class="step"><button data-step="officers" data-d="-1">−</button><b id="officers">9</b><button data-step="officers" data-d="1">+</button></div></div>
-        <label class="field"><span>Notes</span><textarea id="notes" rows="2" placeholder="Anything else officers have seen or heard"></textarea></label>
-      </section>
-
-      <button class="go" id="go">Generate tactical plan</button>
-      <p class="fine">Plans run on the HybridEdge Agents API on this device — in the cloud when there's a link, on the device when there isn't.</p>
-    </main>
-
-    <!-- Plan -->
-    <main id="plan" class="screen" hidden>
-      <div class="planbar">
-        <button class="ghost" id="back">← New incident</button>
-        <a class="ghost" id="consoleLink" target="_blank" rel="noopener">View on console ↗</a>
-      </div>
-      <h1 class="ptitle" id="ptitle"></h1>
-
-      <section class="card threat" id="threat">
-        <div class="lvl" id="lvl">–</div>
-        <div class="tinfo">
-          <div class="tlabel" id="tlabel">Assessing threat…</div>
-          <div class="tposture" id="tposture"></div>
-          <div class="tfactors" id="tfactors"></div>
+          <label for="location">Location</label>
+          <input id="location" value="14 Harbour Rd" />
+          <label>Weapon</label>
+          <div class="seg" id="weapon"><button data-v="none">None</button><button data-v="edged">Edged</button><button data-v="firearm" class="on">Firearm</button><button data-v="unknown">Unknown</button></div>
+          <label>Known facts</label>
+          <div class="checks">
+            <button class="chk on" data-k="barricaded">Barricaded</button>
+            <button class="chk" data-k="hostages">Hostages</button>
+            <button class="chk on" data-k="violent">Violent history</button>
+            <button class="chk on" data-k="building">Inside building</button>
+          </div>
+          <div class="nums">
+            <div><label>Subjects</label><div class="step"><button data-step="subjects" data-d="-1">−</button><b id="subjects">1</b><button data-step="subjects" data-d="1">+</button></div></div>
+            <div><label>Officers available</label><div class="step"><button data-step="officers" data-d="-1">−</button><b id="officers">9</b><button data-step="officers" data-d="1">+</button></div></div>
+          </div>
+          <button class="primary" id="go">Create incident and plan</button>
         </div>
       </section>
 
-      <section class="card">
-        <h2>Formation</h2>
-        <div class="fsum" id="fsum"></div>
-        <div class="map" id="map"><div class="placeholder">Formation planner is working…</div></div>
-        <ul class="assign" id="assign"></ul>
-        <div class="requests" id="requests"></div>
+      <!-- Active incident panels -->
+      <section class="panel" id="unitsPanel" hidden>
+        <div class="panel-h"><h2>Units</h2><span class="hint" id="unitsSum"></span></div>
+        <table class="units"><thead><tr><th>Unit</th><th>Assignment</th><th>Status</th></tr></thead><tbody id="units"></tbody></table>
       </section>
 
-      <section class="card">
-        <h2>Agent flow</h2>
-        <div id="flow" class="flowbox"><div class="placeholder">Waiting for the planner…</div></div>
+      <section class="panel" id="planPanel" hidden>
+        <div class="panel-h"><h2>Planning cell</h2><button class="link-btn" id="howBtn">How it ran</button></div>
+        <div class="where" id="where"></div>
+        <ul class="agents" id="agents"></ul>
       </section>
 
-      <section class="card">
-        <h2>Orders</h2>
-        <div class="orders md" id="orders"><div class="placeholder">Orders appear here as the inspector writes them.</div></div>
+      <section class="panel" id="ordersPanel" hidden>
+        <div class="panel-h"><h2>Orders</h2><span class="hint" id="ordersState"></span></div>
+        <div class="orders md" id="orders"></div>
       </section>
 
-      <form class="update" id="update">
-        <input id="updateText" placeholder="Intel update — e.g. child seen at window" autocomplete="off" />
-        <button type="submit" id="updateBtn">Send</button>
-      </form>
-    </main>
+      <section class="panel" id="reqPanel" hidden>
+        <div class="panel-h"><h2>Resource requests</h2></div>
+        <ul class="reqs" id="reqs"></ul>
+      </section>
+
+      <section class="panel" id="updatePanel" hidden>
+        <form class="update" id="update">
+          <input id="updateText" placeholder="Intel update, e.g. child seen at upstairs window" autocomplete="off" />
+          <button type="submit" id="updateBtn">Send update</button>
+        </form>
+        <div class="foot">
+          <button class="link-btn" id="closeInc">Close incident</button>
+          <a class="link-btn" id="consoleLink" target="_blank" rel="noopener">Open in HybridEdge console ↗</a>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <div class="modal" id="modal" hidden role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-card">
+      <div class="modal-h"><h2 id="modalTitle">How the plan was made</h2><button class="x" id="modalClose" aria-label="Close">✕</button></div>
+      <div class="modal-b" id="modalBody"></div>
+    </div>
   </div>
   <div class="toast" id="toast" hidden></div>
   <script src="/flow.js"></script>

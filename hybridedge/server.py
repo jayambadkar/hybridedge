@@ -20,7 +20,7 @@ from .config import ROOT, settings
 from .flow import capability, flow_from_meta
 from .graph import build_graph
 from .router import router
-from .runtime import RUNS, Run, RunBusy, cfg as _cfg, graph, set_graph, start_run
+from .runtime import RUNS, Run, RunBusy, attach_flows, cfg as _cfg, graph, set_graph, start_run
 
 
 
@@ -28,6 +28,12 @@ from .runtime import RUNS, Run, RunBusy, cfg as _cfg, graph, set_graph, start_ru
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await store.init()
+    # Probe providers before accepting requests, so the first task isn't routed to the
+    # device just because nothing has been health-checked yet.
+    try:
+        await asyncio.wait_for(router.check(), timeout=settings.health_timeout_s + 2)
+    except Exception:
+        pass
     router.start()
     async with AsyncSqliteSaver.from_conn_string(str(settings.data_dir / "checkpoints.db")) as saver:
         set_graph(build_graph(saver))
@@ -193,9 +199,7 @@ async def thread(thread_id: str):
                 "ts": c.checkpoint.get("ts"),
             }
         )
-    for m in messages:
-        if m.get("role") == "assistant":
-            m["flow"] = flow_from_meta(m.get("meta") or {})
+    await attach_flows(thread_id, messages)
     run = RUNS.get(thread_id)
     return {
         "thread": t,
