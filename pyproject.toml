@@ -1,7 +1,7 @@
 [project]
 name = "hybridedge-llm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Hybrid cloud/edge multi-agent system that keeps working when the network drops."
 requires-python = ">=3.13"
 dependencies = [
     "aiosqlite>=0.22.1",
@@ -17,4 +17,5 @@ dependencies = [
 [dependency-groups]
 dev = [
     "modal>=1.6.4",
+    "pytest>=9.2.0",
 ]

@@ -1,136 +1,121 @@
-# HybridEdgeLLM
+# HybridEdge
 
-Hybrid cloud/edge multi-agent system for mobile, mission-critical work (police, fire, EMS).
-Agents run on powerful cloud GPUs when there is a link and keep working on the laptop when
-there isn't. Every agent step is checkpointed on the device, so nothing is lost on disconnect,
-crash, or provider failover.
+Multi-agent AI for first responders that keeps working when the network drops.
 
-```
-                 ┌───────────── this laptop (source of truth) ──────────────┐
- Web UI  ──SSE── │ FastAPI edge server                                      │
- (localhost)     │  LangGraph workflow ── SQLite checkpoints (every step)   │
-                 │  Router: Verda ─▶ Modal ─▶ on-device                      │
-                 └─────┬───────────────┬────────────────────┬────────────────┘
-                       │               │                    │
-          Verda H100 (vLLM)   Modal H100 (vLLM, cold    Ollama on M3
-          Nemotron 3.5         standby, scales to 0)     Nemotron 3.5 Bolt E4B
-          Lightning 30B-A3B    same model                (tool use, 16k ctx)
-```
+Agents run on a cloud GPU while there is a link and carry on, on the laptop, when there
+isn't. Every agent step is checkpointed on the device, so a lost connection, a crashed
+provider or a closed browser costs nothing that was already done.
 
-## Run
+![Incident Command: a marauding-attack exercise on a live OpenStreetMap of Helsinki](docs/images/incident-command.jpg)
 
-```bash
-./start.sh            # starts Ollama if needed, then http://localhost:8787
-```
+Built for Junction 2026 on NVIDIA Nemotron: **Nemotron 3.5 Lightning 30B-A3B** in the cloud
+(vLLM on an H100, on Verda with Modal as standby) and **Nemotron 3.5 Bolt E4B** on a
+MacBook Air M3 (Ollama).
 
-Config lives in `.env` (see `.env.example`). Keys stay local; `.env` is gitignored.
+## Results
+
+On the same benchmark items, with the cloud link cut mid-answer on 30% of them:
+
+| | GSM8K | BFCL simple | BFCL multiple | BFCL parallel |
+|---|---|---|---|---|
+| **HybridEdge** | **98.3%** | **100%** | **97.5%** | **82.5%** |
+| Cloud only (cut answers lost) | 66.7% | 58.5% | 62.4% | 50.3% |
+| Device only | 91.7% | 100% | 97.5% | 82.5% |
+
+- All 180 answers were delivered. A cloud-only agent would have lost 66.
+- A dropped link is detected in about 60 ms. The device is writing the same answer again in about 4 s (median).
+- A durable checkpoint costs about 1 ms per step.
+- The full five-adviser incident workflow delivered a brief in all four network scenarios, from 30 s (cloud up) to 48 s (link lost mid-run).
+
+Method, raw numbers and how to reproduce them: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## How it works
 
-**Multi-agent workflow** (`hybridedge/graph.py`):
-`plan → specialists in parallel (Send fan-out) → synthesize`. Each specialist (Medical,
-Fire & Hazmat, Scene Safety, Command & Comms, or a generalist) is its own LangGraph
-**subgraph** with an `agent ⇄ tools` loop. Tools run on the device, so they work offline:
-protocol lookup, deterministic START triage, and an incident log.
+```
+                ┌──────────────── laptop (source of truth) ────────────────┐
+ Browser ─SSE── │ FastAPI ── LangGraph workflow ── SQLite checkpoints       │
+ other apps ─── │ /v1 Agents API     │                                      │
+                │                Router: Verda → Modal → this device        │
+                └────────────────────┬──────────────┬──────────────┬───────┘
+                                     │              │              │
+                          Verda H100 (vLLM)  Modal H100 (vLLM)  Ollama on M3
+                          Lightning 30B      cold standby       Bolt E4B
+```
 
-**Checkpointing**: `AsyncSqliteSaver` with `durability="sync"`, so every workflow step and
-every subgraph step is written to disk before the next one starts.
-- A specialist that already finished is kept (pending writes). After a crash, **Resume**
-  re-runs only the unfinished specialists. Tested with `kill -9` partway through a workflow.
-- Runs are separate from HTTP connections. If the browser reloads, it re-attaches to the
-  run that is still going.
-- **Re-run on cloud** forks the thread from the checkpoint taken after the user's message
-  (LangGraph time travel), so an answer produced on the device can be upgraded once a cloud
-  is back.
+- **One workflow, two shapes.** A lead agent plans, specialists work in parallel with their
+  own tool loops, a reviewer checks the plan and sends issues back, and the lead writes the
+  brief. In the cloud, up to five specialists run at once. On the device, the small model
+  still plans: it ranks the specialists, runs the core two, and defers the rest.
+- **Routing per step, not per task.** Each model call goes to the best target at that
+  moment. A run can start on Verda, overflow to Modal and finish on the laptop.
+- **Failover mid-answer.** Losing the network cuts cloud streams at once. The step re-runs
+  on the device from the last checkpoint. When the cloud returns, a running device step
+  moves back up and deferred specialists run in the cloud.
+- **Nothing is redone.** Finished specialists are stored as pending writes, so a resumed
+  run only executes the unfinished ones.
 
-**Scaling up and down**: the planner can fan out to `CLOUD_MAX_AGENTS` (4) specialists when
-a cloud is up and `EDGE_MAX_AGENTS` (2) on the device. Routing is decided **per LLM step**, not
-per task:
-- Steps go to the highest-priority healthy cloud that has free capacity (`<NAME>_CONCURRENCY`,
-  default 32 concurrent generations).
-- When that cloud is full, the overflow goes to the next cloud. A cold standby (Modal) is woken
-  only when the primary is down *or* full, so it costs nothing during normal load.
-- With no usable cloud, steps run on this device, one generation at a time.
+More detail: [docs/architecture.md](docs/architecture.md).
 
-So a single task's agents can be spread across Verda, Modal and the laptop, and every step
-picks the best target at the moment it runs.
+![Console: a multi-agent run with per-agent routing](docs/images/console.png)
 
-**Failover** (`hybridedge/router.py`):
-- **Device connectivity** is checked every 0.5 s with an OS route lookup that sends no packets.
-  Turning off Wi-Fi cuts in-flight cloud streams immediately and routes work to the device.
-  When the network returns, the providers are re-probed straight away.
-- **Provider health** is probed every 2 s; a refused connection marks a provider down at once.
-  A stall is caught by the first-token (30 s) and between-token (10 s) timeouts.
-- **A failed step** is retried on the next target from the same checkpointed state.
+## Run it
 
-**UI** (`web/`): plain HTML, CSS and JS with no build step and no external assets, so it
-loads offline.
-- **Status bar**: a full-width banner showing Connected / Reconnecting / Offline / No network.
-- **Status menu**: a read-only view of where agents are running.
-- **Settings**: provider setup, live load and health, plus a labelled **Test mode** with
-  outage drills.
-- **Agent progress**: live per-agent progress with inline failover notes.
-- **Collapsible panels**: the sidebar, the workflow cards, and separate Incident log and
-  Checkpoints sections.
+You need [uv](https://docs.astral.sh/uv/), [Ollama](https://ollama.com) and at least one
+OpenAI-compatible endpoint serving Nemotron 3.5 Lightning. See [docs/deploy.md](docs/deploy.md).
 
-Routing checks: `PYTHONPATH=. uv run python tests/check_routing.py`.
+```bash
+cp .env.example .env      # add your endpoint URLs and keys
+./start.sh                # pulls the on-device model on first run
+```
 
-## On-device Agents API (`/v1`)
-
-Any app on the device can use the same checkpointed, failover-aware agents through a small
-Responses-style API (`hybridedge/agents_api.py`). Every session is an ordinary incident,
-so **the console shows sessions from other apps live**, marked with the app's name.
-
-| Endpoint | Purpose |
+| URL | What it is |
 |---|---|
-| `POST /v1/responses` | Run a task. Body: `input`, `agent` (`incident` \| `police_tactical`), `stream`, `previous_response_id` or `session_id`, `source`, `metadata` |
-| `GET /v1/responses/{id}` | Fetch a response |
-| `POST /v1/sessions`, `GET /v1/sessions[/{id}]` | Create, list or inspect sessions |
-| `GET /v1/sessions/{id}/stream` | Live SSE of everything in a session, whichever client started it |
-| `GET /v1/sessions/{id}/flow` | The task's **flow** graph (see below) |
-| `GET /v1/agents`, `/v1/status`, `/v1/capability`, `/v1/models` | Catalogue and live capability |
+| http://localhost:8787 | Console: incidents, live agent progress, settings, benchmarks |
+| http://localhost:8787/command/ | Incident Command: a marauding-attack exercise on a live map |
+| http://localhost:8787/docs | Agents API reference |
 
-Streaming uses Responses-API events (`response.created`, `response.output_text.delta`,
-`response.completed`, `response.failed`) plus `hybridedge.*` events: `plan`, `step_start`,
-`tool_call`, `tool_result`, `failover`, `checkpoint`, `agent_done` and `flow`.
+To try the offline path, open the connection menu (Incident Command, top right) or
+**Settings → Test mode** and simulate losing the network. Or turn off Wi-Fi.
+
+## Agents API
+
+Other apps on the device use the same checkpointed, failover-aware agents through a
+Responses-style API. Every session also appears live in the console.
 
 ```bash
 curl -N localhost:8787/v1/responses -H 'content-type: application/json' -d '{
-  "agent": "police_tactical", "stream": true, "source": "my-app",
-  "input": "Barricaded suspect, firearm reported, 9 officers available. Plan the response."}'
+  "agent": "mta", "stream": true,
+  "input": "Two attackers with knives at Narinkka Square, moving east. Produce the commander'\''s brief."}'
 ```
 
-Agent teams (profiles) live in `hybridedge/graph.py`. Adding a new domain means adding a roster
-of roles plus any tools; the planning, checkpointing, failover and flow logic is shared.
+Endpoints and events: [docs/agents-api.md](docs/agents-api.md).
 
-**Flow model** (`hybridedge/flow.py`, rendered by `web/flow.js`): every task goes through
-`Prompt → Planning → Reasoning (agent ⇄ tool loops) → Checkpointing → Result`. The graph has
-exactly two shapes, decided only by the class of inference provider:
-- **Cloud (unconstrained)**: up to 4 agents fan out in parallel lanes.
-- **On-device (constrained)**: up to 2 agents queue on one track and run one at a time.
+## Repository layout
 
-Each step is coloured by where it ran, so a mixed run is visible at a glance.
+```
+hybridedge/   server, router, LangGraph workflow, tools, Agents API
+web/          console and Incident Command (plain HTML/CSS/JS, no build step)
+bench/        benchmark scripts and the latest results
+deploy/       Modal deployment
+tests/        unit tests (no models or network needed)
+docs/         architecture, benchmarks, API, deployment
+```
 
-## Patrol demo (`/command/`)
+## Development
 
-A mobile police tactical-response app built **only** on `/v1`. It has no knowledge of clouds,
-providers or checkpoints. Pick the incident, intel and officer count, and it streams back:
-- a threat level (from the deterministic `assess_threat` tool)
-- an animated formation map (from the `plan_formation` tool)
-- the live agent flow
-- tactical orders
+```bash
+uv sync
+uv run pytest
+```
 
-Intel updates continue the same session via `previous_response_id`. Use **View on console ↗**
-to open the same session in the console. Open it at http://localhost:8787/command/.
+## Limitations
 
-## Cloud deployments
+- The protocol cards, hospital capacities and unit numbers are demo data. Local procedures
+  and command decisions always take precedence.
+- The device model is small: it runs a reduced team, and its reports are shorter.
+- Benchmarks use the first 40 to 60 items of each set, so treat differences of a few points
+  as noise.
 
-- **Verda**: serverless container `hybridedge-nemotron`, image `vllm/vllm-openai:v0.27.1`,
-  1× H100 SXM5, about $5.77/h while running. Pause it in the Verda console when you're not
-  using it.
-- **Modal**: `uv run modal deploy deploy/modal_app.py` (instructions are in the file).
-  Scales to zero after 10 idle minutes.
+## Licence
 
-The on-device model: `ollama pull nemotron-3.5-bolt:e4b && ollama create hybridedge-bolt -f Modelfile`.
-
-> The protocol cards are generic demo references. Local SOPs and medical direction take precedence.
+[MIT](LICENSE)

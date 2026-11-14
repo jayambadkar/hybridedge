@@ -1,8 +1,8 @@
-"""Unit checks: device network-loss detection and capacity-aware overflow routing."""
+"""Device network-loss detection and capacity-aware overflow routing."""
 import asyncio
 import hybridedge.router as R
 
-async def main():
+async def _scenario():
     r = R.Router()
     v, m = r.by_name["verda"], r.by_name["modal"]
     for s in (v, m):
@@ -41,4 +41,6 @@ async def main():
     task.cancel()
     await r._http.aclose()
 
-asyncio.run(main())
+
+def test_routing_and_network_loss():
+    asyncio.run(_scenario())

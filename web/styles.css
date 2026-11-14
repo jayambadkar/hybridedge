@@ -403,7 +403,8 @@ body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; 
 .cv-tip i.c { background: var(--c-series); } .cv-tip i.d { background: var(--d-series); }
 .bb-row { grid-template-columns: 86px 1fr 56px; }
 .cv { position: relative; }
-.cv svg { width: 100%; height: auto; display: block; }
+.cv svg { width: 100%; height: auto; display: block; stroke: none; stroke-width: 0; }
+.cv text { stroke: none; font-family: var(--font); }
 .cv-grid { stroke: var(--line); stroke-width: 1; }
 .cv-ax { fill: var(--muted); font-size: 11px; }
 .cv-lab { fill: var(--ink-2); font-size: 12px; font-weight: 500; }

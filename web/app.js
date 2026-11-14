@@ -480,6 +480,7 @@ async function syncSessions() {
 }
 
 function openFromHash() {
+  if (location.hash === "#benchmarks") { if (state.view !== "bench") openBench(); return; }
   const m = location.hash.match(/session=([a-z0-9]+)/i);
   if (m && m[1] !== state.threadId) openThread(m[1]).catch(() => {});
 }

@@ -39,9 +39,12 @@
       return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${failText(why)}.${next ? ` ${next}.` : ""}`;
     }
     if (e.kind === "upgrade") return `${Name(flow, e.from)} → ${name(flow, e.to)}`;
-    if (e.kind === "switch") return `${Name(flow, e.from)} → ${name(flow, e.to)}. ${e.reason || "Routing changed"}.`;
+    if (e.kind === "switch") return `${Name(flow, e.from)} → ${name(flow, e.to)}${e.reason && !OBVIOUS.test(e.reason) ? `. ${e.reason}.` : ""}`;
     return `Started on ${name(flow, e.to)}. ${e.reason || ""}${e.reason ? "." : ""}`;
   }
+
+  // Reasons not worth printing: the primary cloud being used is the normal case.
+  const OBVIOUS = /primary cloud and healthy/i;
 
   function summary(flow) {
     const r = flow.routing || [];
@@ -66,10 +69,11 @@
     if (last.kind === "upgrade") return "";
     if (switches.length) {
       const e = switches[switches.length - 1];
+      if (e.kind === "switch" && OBVIOUS.test(e.reason || "")) return ""; // back on the primary cloud: nothing to call out
       return `Switched at ${time(e.ts)} — ${eventText(flow, e)}`;
     }
     const first = r[0];
-    if (/primary cloud and healthy/i.test(first.reason || "")) return "";
+    if (OBVIOUS.test(first.reason || "")) return "";
     return `Ran on ${name(flow, first.to)}: ${first.reason || ""}`;
   }
 
