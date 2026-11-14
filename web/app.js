@@ -273,6 +273,27 @@ function renderSettings() {
   </div>`;
 }
 
+/* ------------------------------------------------------------- live sync */
+// Sessions can be created and driven by other apps on this device through the Agents API
+// (/v1). Keep the incident list fresh and join any run on the open incident as it starts.
+async function syncSessions() {
+  if (document.hidden) return;
+  try {
+    const before = state.threads.find((t) => t.id === state.threadId);
+    await loadThreads();
+    if (!state.threadId || state.sending || state.view !== "chat") return;
+    const now = state.threads.find((t) => t.id === state.threadId);
+    if (!now) return;
+    if (now.running) return openThread(now.id); // re-attaches to the live run
+    if (before && now.updated_at !== before.updated_at) openThread(now.id, { attach: false });
+  } catch {}
+}
+
+function openFromHash() {
+  const m = location.hash.match(/session=([a-z0-9]+)/i);
+  if (m && m[1] !== state.threadId) openThread(m[1]).catch(() => {});
+}
+
 /* ------------------------------------------------------------------ threads */
 async function loadThreads() {
   state.threads = await api("/api/threads");
@@ -280,7 +301,7 @@ async function loadThreads() {
 }
 function renderThreads() {
   $("#threads").innerHTML = state.threads.map((t) =>
-    `<button class="thread ${t.id === state.threadId ? "active" : ""}" data-thread="${t.id}"><span class="t">${esc(t.title)}</span><span class="s">${ago(t.updated_at)}</span></button>`
+    `<button class="thread ${t.id === state.threadId ? "active" : ""}" data-thread="${t.id}"><span class="t">${esc(t.title)}</span><span class="s">${t.running ? `<span class="live">Live</span> · ` : ""}${t.source && t.source !== "console" ? `${esc(cap(t.source))} · ` : ""}${ago(t.updated_at)}</span></button>`
   ).join("") || `<div class="muted" style="padding:8px 10px;font-size:12.5px">No incidents yet.</div>`;
 }
 
@@ -333,12 +354,13 @@ const noteHTML = (f) => f.generic
   ? `<div class="note">↪ Switched provider mid-task — resumed from checkpoint</div>`
   : `<div class="note">↪ ${esc(targetName(f.from))} dropped (${esc(f.reason)}) — resumed on ${esc(targetName(f.to))} from checkpoint</div>`;
 
-function workflowHTML(plan, agents, running) {
+function workflowHTML(plan, agents, running, flow) {
   if (!plan) return "";
   const n = plan.tasks.length;
   const collapsed = collapsedWf.has(plan.turn_id);
-  const head = `<button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>`;
-  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
+  const head = `<button class="wf-h" data-wf="${esc(plan.turn_id)}" aria-expanded="${!collapsed}"><svg class="chev" viewBox="0 0 20 20"><path d="M7 5l5 5-5 5"/></svg><b>${n === 1 ? "1 agent" : flow && flow.layout === "serial" ? `${n} agents, one at a time` : `${n} agents in parallel`}</b><span>· Planned on ${esc(targetName(plan.planned_on))}</span><span class="r">${running ? "Running" : "Complete"}</span></button>`;
+  const flowHTML = flow && window.HybridFlow ? `<div class="wf-flow">${HybridFlow.render(flow)}</div>` : "";
+  return `<div class="wf ${collapsed ? "collapsed" : ""}">${head}${flowHTML}${plan.tasks.map((t) => agentHTML(agents[t.id] || { id: t.id, title: t.title, task: t.task, status: "queued" }, expanded.has(t.id))).join("")}</div>`;
 }
 
 function answerHTML(text, meta, { streaming = false, isLast = false } = {}) {
@@ -376,8 +398,8 @@ function renderFeed(scroll = false) {
       if (m.role === "user") parts.push(`<div class="user">${esc(m.content)}</div>`);
       else if (m.role === "assistant") {
         const wf = m.meta?.workflow;
-        const multi = wf && wf.plan.tasks.length > 1;
-        parts.push(`<div class="turn">${multi ? workflowHTML(wf.plan, agentsFromResults(wf), false) : ""}${answerHTML(m.content, m.meta, { isLast: i === lastAssistant && !state.live })}</div>`);
+        const showCard = wf && (wf.plan.tasks.length > 1 || m.flow);
+        parts.push(`<div class="turn">${showCard ? workflowHTML(wf.plan, agentsFromResults(wf), false, m.flow) : ""}${answerHTML(m.content, m.meta, { isLast: i === lastAssistant && !state.live })}</div>`);
       }
     });
     if (state.live) parts.push(liveHTML());
@@ -394,8 +416,10 @@ function liveHTML() {
   let html = "";
   if (L.userText) html += `<div class="user">${esc(L.userText)}</div>`;
   const parts = [];
-  if (!L.plan) parts.push(`<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>`);
-  if (L.plan && L.plan.tasks.length > 1) parts.push(workflowHTML(L.plan, L.agents, !L.final));
+  if (!L.plan) parts.push(L.flow && window.HybridFlow
+    ? `<div class="wf"><div class="wf-flow" style="border-bottom:0">${HybridFlow.render(L.flow)}</div></div>`
+    : `<div class="thinking"><span class="st"><span class="spin"></span></span>${L.planning ? `Planning on ${esc(targetName(L.planning))}…` : "Starting…"}</div>`);
+  if (L.plan) parts.push(workflowHTML(L.plan, L.agents, !L.final, L.flow));
   if (L.plan && L.plan.tasks.length === 1) {
     const a = Object.values(L.agents)[0];
     if (a && !L.final) {
@@ -450,6 +474,7 @@ function handleEvent(ev) {
     case "agent_done": { const a = agentFor(); a.status = "done"; a.output = ev.result.output; a.targets = ev.result.targets; break; }
     case "final": L.final = { text: ev.content, done: true, meta: ev.meta }; break;
     case "checkpoint": L.checkpoints += 1; bumpCheckpoints(ev); break;
+    case "flow": L.flow = ev.flow; break;
     case "error": L.error = ev.message; break;
   }
   schedule();
@@ -680,5 +705,7 @@ window.addEventListener("offline", () => pollStatus());
   try { last = localStorage.getItem("he.thread"); } catch {}
   if (last && state.threads.some((t) => t.id === last)) await openThread(last);
   else renderFeed();
-  setInterval(renderThreads, 60000);
+  setInterval(syncSessions, 2500);
+  window.addEventListener("hashchange", openFromHash);
+  openFromHash();
 })();

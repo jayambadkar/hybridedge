@@ -8,55 +8,21 @@ from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from pydantic import BaseModel
 
 from . import store
+from .agents_api import api as agents_api
 from .config import ROOT, settings
+from .flow import capability, flow_from_meta
 from .graph import build_graph
 from .router import router
+from .runtime import RUNS, Run, RunBusy, cfg as _cfg, graph, set_graph, start_run
 
 
-class Run:
-    """A graph run decoupled from any HTTP connection: clients can drop and re-attach."""
-
-    def __init__(self, thread_id: str, kind: str) -> None:
-        self.thread_id = thread_id
-        self.kind = kind
-        self.events: list[dict] = []
-        self.done = False
-        self._cond = asyncio.Condition()
-        self.task: asyncio.Task | None = None
-
-    async def push(self, ev: dict) -> None:
-        ev.setdefault("ts", time.time())
-        async with self._cond:
-            self.events.append(ev)
-            self._cond.notify_all()
-
-    async def finish(self) -> None:
-        async with self._cond:
-            self.done = True
-            self._cond.notify_all()
-
-    async def subscribe(self, start: int = 0) -> AsyncIterator[dict]:
-        i = start
-        while True:
-            async with self._cond:
-                while i >= len(self.events) and not self.done:
-                    await self._cond.wait()
-                batch = self.events[i:]
-                finished = self.done
-            for ev in batch:
-                yield ev
-            i += len(batch)
-            if finished and i >= len(self.events):
-                return
-
-
-RUNS: dict[str, Run] = {}
 
 
 @asynccontextmanager
@@ -64,71 +30,36 @@ async def lifespan(app: FastAPI):
     await store.init()
     router.start()
     async with AsyncSqliteSaver.from_conn_string(str(settings.data_dir / "checkpoints.db")) as saver:
-        app.state.graph = build_graph(saver)
+        set_graph(build_graph(saver))
         yield
     await router.stop()
 
 
 app = FastAPI(title="HybridEdgeLLM", lifespan=lifespan)
+# Other demo apps on this device (any localhost port) may call the Agents API directly.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$",
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.include_router(agents_api)
 
 
 @app.middleware("http")
 async def no_stale_assets(request, call_next):
     """Always revalidate the web app's files so a reload picks up the newest UI."""
     resp = await call_next(request)
-    if not request.url.path.startswith("/api/"):
+    if not request.url.path.startswith(("/api/", "/v1/")):
         resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
-def graph():
-    return app.state.graph
-
-
-def _cfg(thread_id: str, **extra: Any) -> dict:
-    return {"configurable": {"thread_id": thread_id, **extra}, "recursion_limit": 4 * settings.max_agent_steps + 4}
-
-
-async def _execute(run: Run, inp: Any, config: dict) -> None:
-    await run.push({"type": "run_start", "kind": run.kind, "active": router.active})
-    try:
-        async for ns, mode, chunk in graph().astream(inp, config, stream_mode=["custom", "checkpoints"], durability="sync", subgraphs=True):
-            if mode == "custom":
-                await run.push(chunk)
-            elif mode == "checkpoints":
-                vals = chunk["values"]
-                task = vals.get("task") or {}
-                await run.push(
-                    {
-                        "type": "checkpoint",
-                        "checkpoint_id": chunk["config"]["configurable"]["checkpoint_id"],
-                        "ns": "|".join(ns),
-                        "step": chunk["metadata"].get("step"),
-                        "source": chunk["metadata"].get("source"),
-                        "next": list(chunk.get("next", [])),
-                        "agent": task.get("role") or "lead",
-                        "task_id": task.get("id"),
-                    }
-                )
-        await run.push({"type": "done"})
-    except asyncio.CancelledError:
-        await run.push({"type": "error", "message": "Run cancelled. State is safe at the last checkpoint; resume to continue."})
-        raise
-    except Exception as e:
-        await run.push({"type": "error", "message": f"{type(e).__name__}: {e}. State is safe at the last checkpoint."})
-    finally:
-        await store.touch_thread(run.thread_id)
-        await run.finish()
-
-
 def _start(thread_id: str, kind: str, inp: Any, config: dict) -> Run:
-    cur = RUNS.get(thread_id)
-    if cur and not cur.done:
-        raise HTTPException(409, "A run is already in progress for this incident")
-    run = Run(thread_id, kind)
-    RUNS[thread_id] = run
-    run.task = asyncio.create_task(_execute(run, inp, config))
-    return run
+    try:
+        return start_run(thread_id, kind, inp, config)
+    except RunBusy as e:
+        raise HTTPException(409, str(e))
 
 
 def _sse(run: Run, start: int = 0) -> StreamingResponse:
@@ -163,7 +94,9 @@ class MessageBody(BaseModel):
 
 @app.get("/api/status")
 async def status():
-    return router.status()
+    st = router.status()
+    st["capability"] = capability("cloud" if router.online else "edge")
+    return st
 
 
 @app.post("/api/link")
@@ -230,7 +163,11 @@ async def get_settings():
 
 @app.get("/api/threads")
 async def threads():
-    return await store.list_threads()
+    out = await store.list_threads()
+    for t in out:
+        run = RUNS.get(t["id"])
+        t["running"] = bool(run and not run.done)
+    return out
 
 
 @app.post("/api/threads")
@@ -256,6 +193,9 @@ async def thread(thread_id: str):
                 "ts": c.checkpoint.get("ts"),
             }
         )
+    for m in messages:
+        if m.get("role") == "assistant":
+            m["flow"] = flow_from_meta(m.get("meta") or {})
     run = RUNS.get(thread_id)
     return {
         "thread": t,

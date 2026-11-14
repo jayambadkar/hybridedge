@@ -5,6 +5,7 @@ this store only holds the index of incidents and the operator-visible log.
 """
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
@@ -23,20 +24,44 @@ CREATE TABLE IF NOT EXISTS events (
   priority TEXT NOT NULL, text TEXT NOT NULL, tier TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_thread ON events(thread_id, ts);
+CREATE TABLE IF NOT EXISTS responses (
+  id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, status TEXT NOT NULL, created_at REAL NOT NULL,
+  completed_at REAL, output_text TEXT, meta TEXT, error TEXT, metadata TEXT
+);
 """
+
+MIGRATIONS = [
+    "ALTER TABLE threads ADD COLUMN source TEXT NOT NULL DEFAULT 'console'",
+    "ALTER TABLE threads ADD COLUMN profile TEXT NOT NULL DEFAULT 'incident'",
+]
 
 
 async def init() -> None:
     async with aiosqlite.connect(DB) as db:
         await db.executescript(SCHEMA)
+        for stmt in MIGRATIONS:  # idempotent: ignore "duplicate column"
+            try:
+                await db.execute(stmt)
+            except aiosqlite.OperationalError:
+                pass
         await db.commit()
 
 
-async def create_thread(title: str) -> dict:
+async def create_thread(title: str, source: str = "console", profile: str = "incident") -> dict:
     now = time.time()
-    t = {"id": uuid.uuid4().hex[:12], "title": title.strip()[:80] or "New incident", "created_at": now, "updated_at": now}
+    t = {
+        "id": uuid.uuid4().hex[:12],
+        "title": title.strip()[:80] or "New incident",
+        "created_at": now,
+        "updated_at": now,
+        "source": (source or "console")[:40],
+        "profile": profile,
+    }
     async with aiosqlite.connect(DB) as db:
-        await db.execute("INSERT INTO threads VALUES (?,?,?,?)", (t["id"], t["title"], now, now))
+        await db.execute(
+            "INSERT INTO threads (id, title, created_at, updated_at, source, profile) VALUES (?,?,?,?,?,?)",
+            (t["id"], t["title"], now, now, t["source"], profile),
+        )
         await db.commit()
     return t
 
@@ -81,3 +106,34 @@ async def list_events(thread_id: str) -> list[dict]:
         db.row_factory = aiosqlite.Row
         rows = await db.execute_fetchall("SELECT * FROM events WHERE thread_id=? ORDER BY ts", (thread_id,))
     return [dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------ responses
+async def create_response(rid: str, thread_id: str, metadata: dict | None) -> None:
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "INSERT INTO responses (id, thread_id, status, created_at, metadata) VALUES (?,?,?,?,?)",
+            (rid, thread_id, "in_progress", time.time(), json.dumps(metadata or {})),
+        )
+        await db.commit()
+
+
+async def finish_response(rid: str, status: str, output_text: str | None, meta: dict | None, error: str | None) -> None:
+    async with aiosqlite.connect(DB) as db:
+        await db.execute(
+            "UPDATE responses SET status=?, completed_at=?, output_text=?, meta=?, error=? WHERE id=?",
+            (status, time.time(), output_text, json.dumps(meta or {}), error, rid),
+        )
+        await db.commit()
+
+
+async def get_response(rid: str) -> dict | None:
+    async with aiosqlite.connect(DB) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall("SELECT * FROM responses WHERE id=?", (rid,))
+    if not rows:
+        return None
+    r = dict(rows[0])
+    r["meta"] = json.loads(r["meta"] or "{}")
+    r["metadata"] = json.loads(r["metadata"] or "{}")
+    return r

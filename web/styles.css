@@ -300,3 +300,7 @@ body { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; 
 
 .sidebar .settings-btn { margin-top: 6px; }
 .drill-row .grow { flex: 1; min-width: 0; }
+
+.wf-flow { padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
+.wf.collapsed .wf-flow { display: none; }
+.thread .live { color: var(--ok); font-weight: 500; }

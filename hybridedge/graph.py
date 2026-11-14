@@ -59,6 +59,36 @@ ROLES: dict[str, dict[str, Any]] = {
     },
 }
 
+POLICE_ROLES: dict[str, dict[str, Any]] = {
+    "intel": {
+        "title": "Intel Analyst",
+        "brief": "Scores the threat with assess_threat, lists what is known vs unknown, and names the intel gaps to close.",
+        "tools": ["assess_threat", "log_event"],
+    },
+    "formation": {
+        "title": "Formation Planner",
+        "brief": "Builds the officer formation with plan_formation (use the intel level and officer count given) and explains each assignment.",
+        "tools": ["plan_formation", "assess_threat", "log_event"],
+    },
+    "containment": {
+        "title": "Containment",
+        "brief": "Cordons, evacuation of the public, traffic control and exit routes for the subject.",
+        "tools": ["lookup_protocol", "log_event"],
+    },
+    "command": {
+        "title": "Command & Comms",
+        "brief": "Command structure, radio plan, specialist resources to request, and 'actions on' contingencies.",
+        "tools": ["lookup_protocol", "get_incident_log", "log_event"],
+    },
+    "medical_support": {
+        "title": "Medical Support",
+        "brief": "EMS staging, casualty triage and medical contingencies for officers and the public.",
+        "tools": ["start_triage", "lookup_protocol"],
+    },
+}
+
+ALL_ROLES: dict[str, dict[str, Any]] = {**ROLES, **POLICE_ROLES}
+
 COMMON = """Current local time: {now}. You support first responders (police, fire, EMS).
 Be concise and actionable: most important action first, short numbered steps.
 Use tools for facts: lookup_protocol for procedures (never invent protocol details), start_triage for START triage,
@@ -116,6 +146,7 @@ def merge_results(left: list[dict], right: list[dict] | dict) -> list[dict]:
 
 
 class State(TypedDict, total=False):
+    profile: str  # which agent team runs this session ("incident" | "police_tactical")
     messages: Annotated[list[dict], operator.add]
     plan: dict
     results: Annotated[list[dict], merge_results]
@@ -138,23 +169,27 @@ def _emitter(ctx: dict):
 
 
 # ----------------------------------------------------------------------- plan
-PLAN_PROMPT = """You are the incident lead coordinating specialist agents for first responders.
+PLAN_PROMPT = """You are the {lead}.
 Available specialists:
 {roster}
 Decide which specialists should work on the latest user message, in parallel. Use at most {budget}.
 - Simple, conversational or single-domain requests: exactly one specialist (use "generalist" if none fits).
 - Complex multi-domain incidents: several specialists, each with a distinct, concrete sub-task.
+{extra}
 Respond with JSON only: {{"agents": [{{"role": "<role>", "task": "<one-sentence sub-task>"}}]}}"""
 
 
 async def plan(state: State, config: RunnableConfig) -> dict:
     emit = _emitter({"agent": "lead", "task_id": "plan"})
-    roster = "\n".join(f'- "{k}": {v["brief"]}' for k, v in ROLES.items())
+    prof = PROFILES[state.get("profile") or "incident"]
+    roles = prof["roles"]
+    roster = "\n".join(f'- "{k}": {v["brief"]}' for k, v in roles.items())
     conv = _conversation(state["messages"])
 
     async def call(target: str, step_id: str) -> dict:
         budget = settings.cloud_max_agents if target != EDGE else settings.edge_max_agents
-        msgs = [{"role": "system", "content": PLAN_PROMPT.format(roster=roster, budget=budget)}] + _fit(conv, target)
+        prompt = PLAN_PROMPT.format(lead=prof["lead"], roster=roster, budget=budget, extra=prof["plan_extra"])
+        msgs = [{"role": "system", "content": prompt}] + _fit(conv, target)
         msg = await router.stream_step(target, msgs, None, emit, step_id, json_mode=True, max_tokens=400, silent=True)
         msg["meta"]["budget"] = budget
         return msg
@@ -169,17 +204,17 @@ async def plan(state: State, config: RunnableConfig) -> dict:
         seen = set()
         for a in data.get("agents", []):
             role = str(a.get("role", "")).strip()
-            if role in ROLES and role not in seen and str(a.get("task", "")).strip():
+            if role in roles and role not in seen and str(a.get("task", "")).strip():
                 seen.add(role)
                 tasks.append({"role": role, "task": str(a["task"]).strip()[:300]})
     except Exception:
         tasks = []
     if not tasks:
-        tasks = [{"role": "generalist", "task": conv[-1]["content"][:300] if conv else "Assist the responder."}]
+        tasks = [dict(t) for t in prof["fallback"]] if prof["fallback"] else [{"role": "generalist", "task": conv[-1]["content"][:300] if conv else "Assist the responder."}]
     tasks = tasks[:budget]
     for t in tasks:
         t["id"] = uuid.uuid4().hex[:8]
-        t["title"] = ROLES[t["role"]]["title"]
+        t["title"] = ALL_ROLES[t["role"]]["title"]
     p = {"turn_id": uuid.uuid4().hex[:8], "tasks": tasks, "planned_on": msg["meta"]["target"], "budget": budget}
     emit({"type": "plan", "plan": p})
     return {"plan": p, "results": {"__reset__": True}}
@@ -190,9 +225,21 @@ def fan_out(state: State) -> list[Send]:
     return [Send("specialist", {"task": t, "context": ctx, "messages": [], "results": []}) for t in state["plan"]["tasks"]]
 
 
+POLICE_SYNTH = """You are the duty inspector. Merge the specialist reports into TACTICAL ORDERS for the officers on scene.
+Use exactly these short sections:
+**Situation** — one line.
+**Intel level** — level and label, then the key factors.
+**Posture** — one line, with the stand-off distance.
+**Assignments** — numbered: position → number of officers → task. Use the formation tool results exactly.
+**Actions on** — what to do if the subject exits, if a weapon is used, if a hostage is seen.
+**Requests** — specialist resources to call.
+Use the exact stand-off/outer distances, positions and officer counts from the formation tool output; never invent other distances.
+Be brief and decisive. Do not add facts that are not in the reports. Current local time: {now}."""
+
+
 # ---------------------------------------------------------- specialist subgraph
 def _spec_tools(role: str) -> list[dict]:
-    allowed = set(ROLES[role]["tools"])
+    allowed = set(ALL_ROLES[role]["tools"])
     return [t for t in TOOL_SPECS if t["function"]["name"] in allowed]
 
 
@@ -207,7 +254,7 @@ async def s_agent(state: SpecState, config: RunnableConfig) -> dict:
     allow_tools = _steps(state) < settings.max_agent_steps - 1
 
     async def call(target: str, step_id: str) -> dict:
-        role = ROLES[task["role"]]
+        role = ALL_ROLES[task["role"]]
         system = f"You are the {role['title']} specialist. {role['brief']}\n" + COMMON.format(now=_now())
         if target == EDGE:
             system += EDGE_NOTE
@@ -280,6 +327,30 @@ then "Needs / unknowns" if any. Do not repeat yourself; do not add facts that ar
 Current local time: {now}."""
 
 
+PROFILES: dict[str, dict[str, Any]] = {
+    "incident": {
+        "label": "Multi-agency incident team",
+        "lead": "incident lead coordinating specialist agents for first responders",
+        "roles": ROLES,
+        "plan_extra": "",
+        "fallback": None,
+        "synth": SYNTH_PROMPT,
+    },
+    "police_tactical": {
+        "label": "Police tactical response team",
+        "lead": "duty inspector coordinating a police tactical planning cell",
+        "roles": POLICE_ROLES,
+        "plan_extra": '- For a new incident, ALWAYS include "intel" and "formation" first; add others if useful.\n'
+        "- For an intel update, re-run the specialists whose output changes.",
+        "fallback": [
+            {"role": "intel", "task": "Score the threat and list intel gaps."},
+            {"role": "formation", "task": "Assign the available officers to positions."},
+        ],
+        "synth": POLICE_SYNTH,
+    },
+}
+
+
 async def synthesize(state: State, config: RunnableConfig) -> dict:
     p = state["plan"]
     order = {t["id"]: i for i, t in enumerate(p["tasks"])}
@@ -287,6 +358,7 @@ async def synthesize(state: State, config: RunnableConfig) -> dict:
     workflow = {"plan": p, "results": results}
     ctx = {"agent": "lead", "task_id": "synth", "phase": "synthesize"}
     emit = _emitter(ctx)
+    prof = PROFILES[state.get("profile") or "incident"]
     if len(results) == 1:
         r = results[0]
         meta = {"target": r["targets"][-1] if r["targets"] else EDGE, "single": True}
@@ -301,7 +373,7 @@ async def synthesize(state: State, config: RunnableConfig) -> dict:
     user_req = conv[-1]["content"] if conv else ""
 
     async def call(target: str, step_id: str) -> dict:
-        system = SYNTH_PROMPT.format(now=_now()) + (EDGE_NOTE if target == EDGE else "")
+        system = prof["synth"].format(now=_now()) + (EDGE_NOTE if target == EDGE else "")
         content = f"Responder request: {user_req}\n\nSpecialist reports:\n{reports}"
         if target == EDGE and len(content) > settings.edge_context_chars:
             content = content[: settings.edge_context_chars] + "\n...(truncated)"

@@ -165,6 +165,122 @@ def start_triage(
     return out("DELAYED", "Breathing <= 30, perfusion adequate, follows commands")
 
 
+# ------------------------------------------------------------- tactical tools
+THREAT_LABELS = {1: "LOW", 2: "GUARDED", 3: "ELEVATED", 4: "CRITICAL"}
+POSTURES = {
+    1: "Direct contact",
+    2: "Controlled approach",
+    3: "Contain and call out",
+    4: "Contain and negotiate — no entry",
+}
+STANDOFF_M = {1: 15, 2: 25, 3: 50, 4: 100}
+
+
+def assess_threat(
+    weapons: str = "unknown",
+    subjects: int = 1,
+    hostages: bool = False,
+    barricaded: bool = False,
+    violent_history: bool = False,
+    intel_confidence: str = "medium",
+) -> dict:
+    """Deterministic intel-level scoring (demo model, not an operational standard)."""
+    w = {"none": 0, "blunt": 1, "edged": 2, "unknown": 2, "firearm": 4}.get(str(weapons).lower(), 2)
+    score = w + (2 if hostages else 0) + (1 if barricaded else 0) + (1 if violent_history else 0) + (1 if subjects > 1 else 0)
+    factors = []
+    if w >= 4:
+        factors.append("Firearm reported")
+    elif w >= 2:
+        factors.append("Edged or unknown weapon")
+    if hostages:
+        factors.append("Hostages / vulnerable persons at risk")
+    if barricaded:
+        factors.append("Subject barricaded")
+    if violent_history:
+        factors.append("History of violence")
+    if subjects > 1:
+        factors.append(f"{subjects} subjects")
+    level = 1 if score <= 1 else 2 if score <= 3 else 3 if score <= 5 else 4
+    conf = str(intel_confidence).lower()
+    if conf == "low" and level < 4:
+        level += 1
+        factors.append("Low intel confidence — level raised one step")
+    return {
+        "intel_level": level,
+        "label": THREAT_LABELS[level],
+        "posture": POSTURES[level],
+        "standoff_m": STANDOFF_M[level],
+        "factors": factors or ["No aggravating factors reported"],
+        "score": score,
+    }
+
+
+def plan_formation(officers: int, intel_level: int, incident_type: str = "incident", structure: bool = True) -> dict:
+    """Allocate available officers to positions around the subject location."""
+    officers = max(1, min(int(officers), 40))
+    lvl = max(1, min(int(intel_level), 4))
+    positions: list[dict] = []
+    left = officers
+    requests: list[str] = []
+
+    def add(pid: str, label: str, ring: str, bearing: int, n: int, note: str = "") -> None:
+        nonlocal left
+        n = max(0, min(n, left))
+        positions.append({"id": pid, "label": label, "ring": ring, "bearing": bearing, "officers": n, "note": note})
+        left -= n
+
+    add("cp", "Command post", "outer", 200, 1 if officers >= 4 else 0, "Incident commander + radio")
+    if lvl >= 3:
+        sides = [("north", "Inner cordon N", 0), ("east", "Inner cordon E", 90), ("south", "Inner cordon S", 180), ("west", "Inner cordon W", 270)]
+        if left < 6:
+            sides = [sides[0], sides[2]]
+        for sid, label, b in sides:
+            add(f"inner_{sid}", label, "inner", b, 1, "Hold position, eyes on exits")
+        if officers >= 6:
+            add("overwatch", "Overwatch", "overwatch", 135, 2 if (lvl == 4 and left >= 6) else 1, "Elevated observation post")
+        if lvl == 3:
+            add("arrest", "Arrest team (standby)", "outer", 160, 2, "Ready for controlled surrender")
+    else:
+        add("contact", "Contact officer", "inner", 180, 1, "Lead communication")
+        add("cover", "Cover officer", "inner", 210, 1, "Cover the contact officer")
+        if structure:
+            add("rear", "Rear containment", "inner", 0, 1, "Cover rear exit")
+    ring_slots = [("outer_a", "Outer cordon / traffic A", 45), ("outer_b", "Outer cordon / traffic B", 315), ("outer_c", "Outer cordon / public C", 250)]
+    i = 0
+    while left > 0 and i < 12:
+        pid, label, b = ring_slots[i % len(ring_slots)]
+        existing = next((p for p in positions if p["id"] == pid), None)
+        if existing:
+            existing["officers"] += 1
+            left -= 1
+        else:
+            add(pid, label, "outer", b, 1, "Keep public and traffic out")
+        i += 1
+    positions.append({"id": "ems", "label": "EMS staging", "ring": "staging", "bearing": 225, "officers": 0, "note": "Ambulance outside the outer cordon"})
+
+    if lvl >= 3:
+        requests.append("Armed / tactical support unit")
+    if lvl == 4:
+        requests += ["Trained negotiator", "Air support or drone overwatch"]
+    requests.append("EMS to staging point")
+    needed = {1: 3, 2: 4, 3: 8, 4: 12}[lvl]
+    shortfall = max(0, needed - officers)
+    if shortfall:
+        requests.insert(0, f"{shortfall} more officers for a safe level-{lvl} formation")
+    return {
+        "incident_type": incident_type,
+        "intel_level": lvl,
+        "posture": POSTURES[lvl],
+        "standoff_m": STANDOFF_M[lvl],
+        "outer_m": STANDOFF_M[lvl] * 3,
+        "officers_available": officers,
+        "officers_assigned": sum(p["officers"] for p in positions),
+        "positions": positions,
+        "requests": requests,
+        "note": "Demo allocation model. The incident commander makes the final call.",
+    }
+
+
 TOOL_SPECS: list[dict] = [
     {
         "type": "function",
@@ -216,6 +332,42 @@ TOOL_SPECS: list[dict] = [
     {
         "type": "function",
         "function": {
+            "name": "assess_threat",
+            "description": "Score the intel/threat level (1 LOW – 4 CRITICAL) from known facts. Returns level, posture, stand-off distance and factors.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "weapons": {"type": "string", "enum": ["none", "blunt", "edged", "firearm", "unknown"]},
+                    "subjects": {"type": "integer"},
+                    "hostages": {"type": "boolean"},
+                    "barricaded": {"type": "boolean"},
+                    "violent_history": {"type": "boolean"},
+                    "intel_confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                },
+                "required": ["weapons"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "plan_formation",
+            "description": "Assign the available officers to positions (cordons, overwatch, contact team, command post, EMS staging) for a given intel level.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "officers": {"type": "integer", "description": "Officers available on scene or en route"},
+                    "intel_level": {"type": "integer", "minimum": 1, "maximum": 4},
+                    "incident_type": {"type": "string"},
+                    "structure": {"type": "boolean", "description": "Subject is inside a building"},
+                },
+                "required": ["officers", "intel_level"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_incident_log",
             "description": "Read back this incident's timestamped log.",
             "parameters": {"type": "object", "properties": {}},
@@ -233,12 +385,19 @@ async def run_tool(name: str, args_json: str, thread_id: str, tier: str) -> tupl
         if name == "lookup_protocol":
             result = lookup_protocol(str(args.get("query", "")))
         elif name == "start_triage":
-            allowed = {k for k in TOOL_SPECS[1]["function"]["parameters"]["properties"]}
+            spec = next(t for t in TOOL_SPECS if t["function"]["name"] == "start_triage")
+            allowed = set(spec["function"]["parameters"]["properties"])
             result = start_triage(**{k: v for k, v in args.items() if k in allowed and v is not None})
         elif name == "log_event":
             pr = args.get("priority", "info")
             ev = await store.add_event(thread_id, str(args.get("text", ""))[:500], pr if pr in ("info", "warning", "critical") else "info", tier)
             result = {"logged": True, "id": ev["id"], "time": time.strftime("%H:%M:%S", time.localtime(ev["ts"]))}
+        elif name == "assess_threat":
+            keys = {"weapons", "subjects", "hostages", "barricaded", "violent_history", "intel_confidence"}
+            result = assess_threat(**{k: v for k, v in args.items() if k in keys and v is not None})
+        elif name == "plan_formation":
+            keys = {"officers", "intel_level", "incident_type", "structure"}
+            result = plan_formation(**{k: v for k, v in args.items() if k in keys and v is not None})
         elif name == "get_incident_log":
             evs = await store.list_events(thread_id)
             result = {"entries": [{"time": time.strftime("%H:%M:%S", time.localtime(e["ts"])), "priority": e["priority"], "text": e["text"]} for e in evs]}

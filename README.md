@@ -75,6 +75,54 @@ loads offline.
 
 Routing checks: `PYTHONPATH=. uv run python tests/check_routing.py`.
 
+## On-device Agents API (`/v1`)
+
+Any app on the device can use the same checkpointed, failover-aware agents through a small
+Responses-style API (`hybridedge/agents_api.py`). Every session is an ordinary incident,
+so **the console shows sessions from other apps live**, marked with the app's name.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /v1/responses` | Run a task. Body: `input`, `agent` (`incident` \| `police_tactical`), `stream`, `previous_response_id` or `session_id`, `source`, `metadata` |
+| `GET /v1/responses/{id}` | Fetch a response |
+| `POST /v1/sessions`, `GET /v1/sessions[/{id}]` | Create, list or inspect sessions |
+| `GET /v1/sessions/{id}/stream` | Live SSE of everything in a session, whichever client started it |
+| `GET /v1/sessions/{id}/flow` | The task's **flow** graph (see below) |
+| `GET /v1/agents`, `/v1/status`, `/v1/capability`, `/v1/models` | Catalogue and live capability |
+
+Streaming uses Responses-API events (`response.created`, `response.output_text.delta`,
+`response.completed`, `response.failed`) plus `hybridedge.*` events: `plan`, `step_start`,
+`tool_call`, `tool_result`, `failover`, `checkpoint`, `agent_done` and `flow`.
+
+```bash
+curl -N localhost:8787/v1/responses -H 'content-type: application/json' -d '{
+  "agent": "police_tactical", "stream": true, "source": "my-app",
+  "input": "Barricaded suspect, firearm reported, 9 officers available. Plan the response."}'
+```
+
+Agent teams (profiles) live in `hybridedge/graph.py`. Adding a new domain means adding a roster
+of roles plus any tools; the planning, checkpointing, failover and flow logic is shared.
+
+**Flow model** (`hybridedge/flow.py`, rendered by `web/flow.js`): every task goes through
+`Prompt → Planning → Reasoning (agent ⇄ tool loops) → Checkpointing → Result`. The graph has
+exactly two shapes, decided only by the class of inference provider:
+- **Cloud (unconstrained)**: up to 4 agents fan out in parallel lanes.
+- **On-device (constrained)**: up to 2 agents queue on one track and run one at a time.
+
+Each step is coloured by where it ran, so a mixed run is visible at a glance.
+
+## Patrol demo (`/patrol/`)
+
+A mobile police tactical-response app built **only** on `/v1`. It has no knowledge of clouds,
+providers or checkpoints. Pick the incident, intel and officer count, and it streams back:
+- a threat level (from the deterministic `assess_threat` tool)
+- an animated formation map (from the `plan_formation` tool)
+- the live agent flow
+- tactical orders
+
+Intel updates continue the same session via `previous_response_id`. Use **View on console ↗**
+to open the same session in the console. Open it at http://localhost:8787/patrol/.
+
 ## Cloud deployments
 
 - **Verda**: serverless container `hybridedge-nemotron`, image `vllm/vllm-openai:v0.27.1`,
