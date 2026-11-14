@@ -516,6 +516,10 @@ def _slim(i: dict) -> dict:
     return {k: i[k] for k in keep if k in i}
 
 
+def _summary(c: dict) -> dict:
+    return {"key_finding": c["headline"]["text"], "priority_order": [p["title"] for p in c["proposals"][:3]]}
+
+
 def _stage_tool(stage: str):
     def run(ctx: dict, args: dict) -> dict:
         c = county(_code(ctx, args))
@@ -525,7 +529,7 @@ def _stage_tool(stage: str):
             out["note"] = s["note"]
         out["proposals"] = [{k: p[k] for k in ("priority", "title", "why", "owner", "steps", "first_90_days", "kpi", "evidence", "strategy", "assumption")}
                             for p in c["proposals"] if p["stage"] == stage]
-        out["is_the_countys_main_gap"] = c["gap_stage"] == stage
+        out["county_summary"] = _summary(c)
         if c["small"]:
             out["caution"] = "Small county: figures vary from year to year."
         return out
@@ -536,8 +540,9 @@ def _outcomes(ctx: dict, args: dict) -> dict:
     c = county(_code(ctx, args))
     s = next(x for x in c["stages"] if x["id"] == "outcome")
     t = next(x for x in c["stages"] if x["id"] == "treatment")
-    return {"county": c["name"], "outcome": [_slim(i) for i in s["indicators"]], "treatment_start": {"status": "not measured", "note": t["note"]},
+    return {"county": c["name"], "outcome": [_slim(i) for i in s["indicators"]], "treatment_start": {"status": "not measured", "note": t["note"], "source": "STRATEGY"},
             "proposals": [{k: p[k] for k in ("priority", "title", "why", "owner", "steps", "first_90_days", "kpi", "evidence", "strategy")} for p in c["proposals"] if p["stage"] == "treatment"],
+            "county_summary": _summary(c),
             "caution": "Survival reflects patients diagnosed over ten years and has no published confidence interval. Do not claim a cause."}
 
 
@@ -582,15 +587,16 @@ ROLES: dict[str, dict[str, Any]] = {
 COMMON = """Current local time: {now}. You analyse cancer care in one Finnish wellbeing services county for its decision-makers.
 Use the tools for every figure: never state a number, a year, a county name or a source that a tool did not return.
 Cite sources by the ids the tools give, in square brackets, for example [SOTKA-6411] or [ROADMAP].
+End your report with two lines copied exactly from county_summary: "County key finding: <key_finding>" and "Priority order: <priority_order>".
 Write plainly for a non-technical reader. Do not claim that one thing causes another: the data shows differences, not causes."""
 
 SYNTH = """You are the lead analyst. Write the COUNTY BRIEF for the county's director of health services, from the reports below.
 It must be readable in under two minutes. Use exactly these sections:
-**Key message** — two sentences: where in the cancer pathway this county's gap opens, with the one figure that shows it.
-**Do first** — a numbered list of at most three actions. Each: what to do in one sentence, who owns it, and the KPI (now → target).
+**Key message** — restate the "County key finding" line from the reports, in at most two sentences. Do not replace it with another finding.
+**Do first** — a numbered list of the three actions in the "Priority order" line, in that order. Each: what to do in one sentence, who owns it, and the KPI (now → target).
 **What we cannot see** — one sentence on the missing data on time to treatment.
 **Sources** — one line listing the source ids used, in square brackets.
-Use the figures from the reports exactly. Do not add figures, causes or sources that are not in the reports. Current local time: {now}."""
+Use the figures from the reports exactly. Do not calculate new figures. Do not add figures, causes or sources that are not in the reports. Current local time: {now}."""
 
 PROFILE = {
     "label": "Cancer pathway analysts",

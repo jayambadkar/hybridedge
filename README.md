@@ -72,6 +72,7 @@ cp .env.example .env      # add your endpoint URLs and keys
 |---|---|
 | http://localhost:8787 | Console: incidents, live agent progress, settings, benchmarks |
 | http://localhost:8787/command/ | Incident Command: a marauding-attack exercise on a live map |
+| http://localhost:8787/pathway/ | Equal Care: where the cancer pathway slows down in each county ([docs](docs/pathway.md)) |
 | http://localhost:8787/docs | Agents API reference |
 
 To try the offline path, open the connection menu (Incident Command, top right) or

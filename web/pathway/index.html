@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#ffffff" />
+  <title>Equal Care</title>
+  <link rel="stylesheet" href="/pathway/pathway.css" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230f766e'/%3E%3Cpath d='M7 16h5l3-6 4 12 3-6h3' fill='none' stroke='%23fff' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E" />
+</head>
+<body>
+  <header class="top">
+    <div class="app-name">Equal Care</div>
+    <div class="app-sub">Where the cancer pathway slows down in each wellbeing services county, and what to do about it</div>
+    <div class="top-right">
+      <span class="muted" id="built"></span>
+      <button class="link" id="link" title="Where the analysts run"><i></i><span id="linkText">Checking…</span></button>
+      <button class="btn" id="sourcesBtn">Sources and limits</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="side">
+      <section class="card map-card">
+        <div class="card-h">
+          <h2>Where the gap opens</h2>
+          <span class="muted">Select a county</span>
+        </div>
+        <div class="map-wrap">
+          <svg id="map" role="img" aria-label="Map of Finland by wellbeing services county"></svg>
+          <div class="tip" id="tip" hidden></div>
+        </div>
+        <div class="legend" id="legend"></div>
+      </section>
+      <section class="card">
+        <div class="card-h"><h2>Finland in seven facts</h2></div>
+        <ol class="facts" id="facts"></ol>
+      </section>
+    </aside>
+
+    <section class="main" id="main">
+      <div class="county-h">
+        <div>
+          <select id="countySel" aria-label="County"></select>
+          <span class="muted" id="countyMeta"></span>
+        </div>
+        <button class="btn" id="printBtn" title="Print or save this county as a PDF">Print</button>
+      </div>
+
+      <p class="headline" id="headline"></p>
+      <p class="unmeasured" id="unmeasured"></p>
+
+      <div class="path" id="path"></div>
+      <div class="warn" id="warnings" hidden></div>
+
+      <div class="sec-h">
+        <h2>What to do</h2>
+        <span class="muted">In priority order. Each proposal names an owner, a KPI and its evidence.</span>
+      </div>
+      <div class="props" id="props"></div>
+
+      <div class="sec-h">
+        <h2>County brief</h2>
+        <span class="muted">Written by the analyst agents from the figures above. Every figure is checked against the data.</span>
+      </div>
+      <section class="card brief-card">
+        <div class="brief-bar">
+          <button class="btn primary" id="briefBtn">Write the brief</button>
+          <div class="agents" id="agents"></div>
+          <span class="check" id="check" hidden></span>
+        </div>
+        <div class="brief md" id="brief"><p class="muted">A two-minute brief for the county's director of health services.</p></div>
+      </section>
+    </section>
+  </main>
+
+  <aside class="drawer" id="drawer" hidden aria-label="Sources and limits">
+    <div class="drawer-h">
+      <h2>Sources and limits</h2>
+      <button class="btn" id="drawerClose">Close</button>
+    </div>
+    <div class="drawer-b" id="drawerBody"></div>
+  </aside>
+  <div class="scrim" id="scrim" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/pathway/pathway.js" type="module"></script>
+</body>
+</html>
