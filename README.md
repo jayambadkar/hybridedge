@@ -1,6 +1,13 @@
 # HybridEdge
 
-Multi-agent AI for first responders that keeps working when the network drops.
+AI agents that keep working when the network drops.
+
+> **Junction 2026 entry: Trusted Trade Agents (Valio Aimo).** A wholesaler interface that
+> customers' purchasing agents can buy through safely, with human approval and an audit trail,
+> and purchasing agents that still place orders offline. See [docs/trade.md](docs/trade.md)
+> and open http://localhost:8787/trade/.
+
+HybridEdge is the runtime underneath, first built for first responders.
 
 Agents run on a cloud GPU while there is a link and carry on, on the laptop, when there
 isn't. Every agent step is checkpointed on the device, so a lost connection, a crashed
@@ -71,6 +78,7 @@ cp .env.example .env      # add your endpoint URLs and keys
 | URL | What it is |
 |---|---|
 | http://localhost:8787 | Console: incidents, live agent progress, settings, benchmarks |
+| http://localhost:8787/trade/ | Trusted Trade Agents: wholesaler interface and purchasing agents ([docs](docs/trade.md)) |
 | http://localhost:8787/command/ | Incident Command: a marauding-attack exercise on a live map |
 | http://localhost:8787/pathway/ | Equal Care: where the cancer pathway slows down in each county ([docs](docs/pathway.md)) |
 | http://localhost:8787/docs | Agents API reference |
