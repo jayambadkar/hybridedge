@@ -229,16 +229,19 @@ class Router:
         self._tasks = [asyncio.create_task(self._loop()), asyncio.create_task(self._net_loop()), asyncio.create_task(self._warm_loop())]
 
     async def _warm_loop(self) -> None:
-        """Keep the on-device model loaded so a failover answers immediately (no ~10 s cold load)."""
+        """Keep the on-device model loaded while it may be needed, so a failover answers at once.
+
+        With EDGE_KEEP_ALIVE=-1 it stays pinned. Otherwise it is loaded whenever the cloud is
+        unreachable (link drop or drill) and freed by Ollama after EDGE_KEEP_ALIVE idle."""
         base = settings.edge_base_url.rsplit("/v1", 1)[0]
-        if settings.edge_keep_alive != "-1":
-            return  # load on demand; Ollama frees memory after EDGE_KEEP_ALIVE idle
+        pinned = settings.edge_keep_alive == "-1"
         while True:
-            try:
-                await self._http.post(f"{base}/api/generate", json={"model": settings.edge_model, "prompt": "", "keep_alive": settings.edge_keep_alive}, timeout=60)
-            except Exception:
-                pass
-            await asyncio.sleep(600)
+            if pinned or self.offline or not self.net_up:
+                try:
+                    await self._http.post(f"{base}/api/generate", json={"model": settings.edge_model, "prompt": "", "keep_alive": settings.edge_keep_alive}, timeout=60)
+                except Exception:
+                    pass
+            await asyncio.sleep(600 if pinned else 3)
 
     async def stop(self) -> None:
         for t in self._tasks:
@@ -389,7 +392,7 @@ class Router:
         try:
             for attempt in range(2):
                 try:
-                    stream = await self._guard(client.chat.completions.create(**req), settings.first_token_timeout_s, cut)
+                    stream = await self._guard(client.chat.completions.create(**req), settings.first_token_timeout_s if target != EDGE else settings.edge_first_token_timeout_s, cut)
                     break
                 except openai.APIConnectionError:
                     # Flaky networks drop new connections; one immediate retry before failing over.
@@ -398,7 +401,7 @@ class Router:
                     await asyncio.sleep(0.5)
             it = stream.__aiter__()
             while True:
-                timeout = settings.first_token_timeout_s if ttft is None else settings.stall_timeout_s
+                timeout = (settings.first_token_timeout_s if target != EDGE else settings.edge_first_token_timeout_s) if ttft is None else settings.stall_timeout_s
                 try:
                     chunk = await self._guard(it.__anext__(), timeout, cut)
                 except StopAsyncIteration:
