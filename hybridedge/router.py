@@ -231,9 +231,11 @@ class Router:
     async def _warm_loop(self) -> None:
         """Keep the on-device model loaded so a failover answers immediately (no ~10 s cold load)."""
         base = settings.edge_base_url.rsplit("/v1", 1)[0]
+        if settings.edge_keep_alive != "-1":
+            return  # load on demand; Ollama frees memory after EDGE_KEEP_ALIVE idle
         while True:
             try:
-                await self._http.post(f"{base}/api/generate", json={"model": settings.edge_model, "prompt": "", "keep_alive": -1}, timeout=60)
+                await self._http.post(f"{base}/api/generate", json={"model": settings.edge_model, "prompt": "", "keep_alive": settings.edge_keep_alive}, timeout=60)
             except Exception:
                 pass
             await asyncio.sleep(600)

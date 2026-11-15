@@ -16,7 +16,7 @@ if ! ollama list | grep -q '^hybridedge-bolt'; then
 fi
 
 # Warm the local model so the first failover is instant.
-curl -s http://127.0.0.1:11434/api/generate -d '{"model":"hybridedge-bolt","prompt":"","keep_alive":"30m"}' >/dev/null || true
+curl -s http://127.0.0.1:11434/api/generate -d '{"model":"hybridedge-bolt","prompt":"","keep_alive":"5m"}' >/dev/null || true
 
 [ -f .env ] || cp .env.example .env
 echo "HybridEdge → http://localhost:${PORT:-8787}"

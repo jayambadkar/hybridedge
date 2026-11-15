@@ -62,6 +62,8 @@ class Settings:
     # Edge tier: Nemotron 3.5 Bolt E4B running locally in Ollama.
     edge_base_url: str = os.getenv("EDGE_BASE_URL", "http://127.0.0.1:11434/v1")
     edge_model: str = os.getenv("EDGE_MODEL", "hybridedge-bolt")
+    # How long Ollama keeps the device model in memory after a call. "-1" pins it (instant failover, ~15 GB held).
+    edge_keep_alive: str = os.getenv("EDGE_KEEP_ALIVE", "5m")
     edge_label: str = os.getenv("EDGE_LABEL", "Nemotron 3.5 Bolt E4B")
     edge_context_chars: int = int(os.getenv("EDGE_CONTEXT_CHARS", "36000"))
     edge_concurrency: int = int(os.getenv("EDGE_CONCURRENCY", "1"))
