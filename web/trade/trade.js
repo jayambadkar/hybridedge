@@ -123,7 +123,7 @@ function onEvent(run, ev) {
         e.r = r.status === "queued_offline" ? `Outbox ${r.outbox_id}`
           : r.status === "pending_approval" ? `Waiting for a human: ${(r.approval_reasons || []).join(", ")}`
           : r.status === "placed" ? `Order ${r.id} placed, ${eur(r.total_eur, 2)}`
-          : r.total_eur != null ? `Quote ${r.id}: ${eur(r.total_eur, 2)}` : r.results ? `${r.results.length} products found` : r.items ? `${r.items.length} lines` : r.routes ? `${r.routes.filter((x) => x.status !== "closed").length} of ${r.routes.length} routes usable` : "";
+          : r.total_eur != null ? `Quote ${r.id}: ${eur(r.total_eur, 2)}` : r.results ? `${r.results.length} product${r.results.length === 1 ? "" : "s"} found` : r.items ? `${r.items.length} lines` : r.routes ? `${r.routes.filter((x) => x.status !== "closed").length} of ${r.routes.length} routes usable` : "";
       }
       break;
     }
